@@ -1,0 +1,8 @@
+.env
+.git
+bin/
+tmp/
+web/admin/node_modules/
+web/admin/dist/
+!web/admin/dist/
+!web/admin/dist/**

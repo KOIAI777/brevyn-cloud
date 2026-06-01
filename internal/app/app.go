@@ -1,0 +1,110 @@
+package app
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/brevyn/brevyn-cloud/internal/admin"
+	"github.com/brevyn/brevyn-cloud/internal/auth"
+	"github.com/brevyn/brevyn-cloud/internal/config"
+	"github.com/brevyn/brevyn-cloud/internal/gateway/sub2api"
+	"github.com/brevyn/brevyn-cloud/internal/health"
+	httpapi "github.com/brevyn/brevyn-cloud/internal/http"
+	"github.com/brevyn/brevyn-cloud/internal/platform"
+	"github.com/brevyn/brevyn-cloud/internal/providers"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
+)
+
+type App struct {
+	cfg      *config.Config
+	logger   *slog.Logger
+	server   *http.Server
+	postgres *pgxpool.Pool
+	redis    *redis.Client
+}
+
+func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, error) {
+	postgres, err := platform.ConnectPostgres(ctx, cfg.DatabaseURL, cfg.PostgresMaxConns, cfg.PostgresMinConns)
+	if err != nil {
+		return nil, fmt.Errorf("connect postgres: %w", err)
+	}
+	if err := platform.EnsureSchema(ctx, postgres, cfg); err != nil {
+		postgres.Close()
+		return nil, fmt.Errorf("ensure schema: %w", err)
+	}
+
+	redisClient, err := platform.ConnectRedis(ctx, cfg.RedisURL)
+	if err != nil {
+		postgres.Close()
+		return nil, fmt.Errorf("connect redis: %w", err)
+	}
+
+	sub2 := sub2api.NewClient(sub2api.ClientConfig{
+		BaseURL:       cfg.Sub2APIBaseURL,
+		AdminAPIKey:   cfg.Sub2APIAdminAPIKey,
+		AdminEmail:    cfg.Sub2APIAdminEmail,
+		AdminPassword: cfg.Sub2APIAdminPassword,
+	})
+
+	router := httpapi.NewRouter(cfg, logger, httpapi.Dependencies{
+		Health:    health.NewHandler(postgres, redisClient),
+		Admin:     admin.NewHandler(cfg, postgres, redisClient),
+		Auth:      auth.NewHandler(cfg, postgres, redisClient),
+		Providers: providers.NewHandler(cfg, sub2),
+	})
+
+	server := &http.Server{
+		Addr:              ":" + cfg.Port,
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	return &App{
+		cfg:      cfg,
+		logger:   logger,
+		server:   server,
+		postgres: postgres,
+		redis:    redisClient,
+	}, nil
+}
+
+func (a *App) Run(ctx context.Context) error {
+	errCh := make(chan error, 1)
+
+	go func() {
+		a.logger.Info("api listening", "addr", a.server.Addr, "env", a.cfg.Env)
+		if err := a.server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	select {
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), a.cfg.ShutdownTimeout)
+		defer cancel()
+		if err := a.server.Shutdown(shutdownCtx); err != nil {
+			return err
+		}
+		a.close()
+		return nil
+	case err := <-errCh:
+		a.close()
+		return err
+	}
+}
+
+func (a *App) close() {
+	if a.redis != nil {
+		_ = a.redis.Close()
+	}
+	if a.postgres != nil {
+		a.postgres.Close()
+	}
+}

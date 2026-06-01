@@ -1,0 +1,101 @@
+services:
+  api:
+    build:
+      context: .
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      PORT: ${PORT:-4000}
+      DATABASE_URL: ${DATABASE_URL:-postgres://brevyn:brevyn@postgres:5432/brevyn_cloud?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      POSTGRES_MAX_CONNS: ${POSTGRES_MAX_CONNS:-30}
+      POSTGRES_MIN_CONNS: ${POSTGRES_MIN_CONNS:-2}
+      APP_BASE_URL: ${APP_BASE_URL:-http://127.0.0.1:4000}
+      ADMIN_BASE_URL: ${ADMIN_BASE_URL:-http://127.0.0.1:4000/admin}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174}
+      ADMIN_WEB_DIR: ${ADMIN_WEB_DIR:-/app/web/admin/dist}
+      APP_WEB_DIR: ${APP_WEB_DIR:-/app/web/app/dist}
+      SUB2API_BASE_URL: ${SUB2API_BASE_URL:-http://host.docker.internal:8080}
+      SUB2API_ADMIN_API_KEY: ${SUB2API_ADMIN_API_KEY:-}
+      SUB2API_ADMIN_EMAIL: ${SUB2API_ADMIN_EMAIL:-}
+      SUB2API_ADMIN_PASSWORD: ${SUB2API_ADMIN_PASSWORD:-}
+      SUB2API_DEFAULT_GROUP_ID: ${SUB2API_DEFAULT_GROUP_ID:-0}
+      REGISTER_PROVISION_CONCURRENCY: ${REGISTER_PROVISION_CONCURRENCY:-10}
+      OFFICIAL_PROVIDER_BASE_URL: ${OFFICIAL_PROVIDER_BASE_URL:-https://api.brevyn.org}
+      OFFICIAL_PROVIDER_DEFAULT_MODEL: ${OFFICIAL_PROVIDER_DEFAULT_MODEL:-claude-sonnet-4-5}
+      DEVICE_SOFT_LIMIT: ${DEVICE_SOFT_LIMIT:-3}
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+    command: ["brevyn-worker"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      DATABASE_URL: ${DATABASE_URL:-postgres://brevyn:brevyn@postgres:5432/brevyn_cloud?sslmode=disable}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      POSTGRES_MAX_CONNS: ${POSTGRES_MAX_CONNS:-10}
+      POSTGRES_MIN_CONNS: ${POSTGRES_MIN_CONNS:-1}
+      SUB2API_BASE_URL: ${SUB2API_BASE_URL:-http://host.docker.internal:8080}
+      SUB2API_ADMIN_API_KEY: ${SUB2API_ADMIN_API_KEY:-}
+      SUB2API_ADMIN_EMAIL: ${SUB2API_ADMIN_EMAIL:-}
+      SUB2API_ADMIN_PASSWORD: ${SUB2API_ADMIN_PASSWORD:-}
+      SUB2API_DEFAULT_GROUP_ID: ${SUB2API_DEFAULT_GROUP_ID:-0}
+      SUB2API_OPERATION_CONCURRENCY: ${SUB2API_OPERATION_CONCURRENCY:-5}
+      SUB2API_OPERATION_BATCH_SIZE: ${SUB2API_OPERATION_BATCH_SIZE:-10}
+      SUB2API_OPERATION_INTERVAL: ${SUB2API_OPERATION_INTERVAL:-10s}
+      SUB2API_OPERATION_STALE_TIMEOUT: ${SUB2API_OPERATION_STALE_TIMEOUT:-5m}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-}
+      ADMIN_SEED_EMAIL: ${ADMIN_SEED_EMAIL:-owner@brevyn.local}
+      ADMIN_SEED_PASSWORD: ${ADMIN_SEED_PASSWORD:-Brevyn@Admin2026}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: brevyn_cloud
+      POSTGRES_USER: brevyn
+      POSTGRES_PASSWORD: brevyn
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brevyn -d brevyn_cloud"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  postgres_data:
+  redis_data:
