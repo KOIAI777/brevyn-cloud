@@ -1,4 +1,4 @@
-import { Activity, Clock, Database, RefreshCw, RotateCcw, Server, Wifi, Zap } from "lucide-react";
+import { Activity, CheckCircle2, Clock, Database, RefreshCw, RotateCcw, Server, ShieldCheck, Wifi, Zap } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { DangerConfirmModal } from "../components/DangerConfirmModal";
@@ -64,6 +64,8 @@ export function DiagnosticsPage() {
   const blocked = (queue?.deadLetter ?? 0) + (queue?.staleRunning ?? 0);
   const sub2apiStatus = data?.sub2api.ok ? "ok" : (data?.sub2api.status ?? "checking");
   const servicesLive = data?.services.postgres.status === "ok" && data?.services.redis.status === "ok";
+  const readiness = data?.productionReadiness ?? [];
+  const readinessWarnings = readiness.filter((item) => item.status !== "ok").length;
 
   return (
     <div className="page-stack">
@@ -124,6 +126,13 @@ export function DiagnosticsPage() {
             delta: `${data?.sub2api.groupCount ?? 0} groups / ${data?.sub2api.latencyMs ?? 0}ms`,
             tone: data?.sub2api.ok ? "green" : "red",
             icon: Wifi
+          },
+          {
+            label: "上线检查",
+            value: readinessWarnings === 0 && readiness.length > 0 ? "clear" : `${readinessWarnings} warning`,
+            delta: `${readiness.length} checks`,
+            tone: readinessWarnings === 0 && readiness.length > 0 ? "green" : "amber",
+            icon: ShieldCheck
           }
         ]}
       />
@@ -226,6 +235,29 @@ export function DiagnosticsPage() {
             </div>
           </div>
         </article>
+      </section>
+
+      <section className="panel">
+        <div className="panel-heading">
+          <h3>上线检查清单</h3>
+          <StatusBadge tone={readinessWarnings === 0 && readiness.length > 0 ? "ok" : "warn"}>
+            {readinessWarnings === 0 && readiness.length > 0 ? "ready" : `${readinessWarnings} warnings`}
+          </StatusBadge>
+        </div>
+        <div className="readiness-grid">
+          {readiness.map((item) => (
+            <div className="readiness-row" key={item.key}>
+              <CheckCircle2 size={17} />
+              <div>
+                <strong>{item.label}</strong>
+                <span>{item.detail}</span>
+              </div>
+              <StatusBadge tone={badgeTone(item.status)}>{item.status}</StatusBadge>
+              <small>{item.status === "ok" ? "无需处理" : item.action}</small>
+            </div>
+          ))}
+        </div>
+        {data && readiness.length === 0 ? <div className="inline-state">暂无上线检查项。</div> : null}
       </section>
       <DangerConfirmModal
         open={retryFailedOpen}

@@ -65,3 +65,21 @@ open http://127.0.0.1:4000/app
 
 Use the normal `docker compose up -d --build` path for production-like builds,
 because it verifies the full multi-stage image including the Node admin build.
+
+## Production Notes
+
+Set `APP_ENV=production` and replace all secrets in `.env`. Production startup
+requires HTTPS, non-local values for `APP_BASE_URL`, `ADMIN_BASE_URL`, and
+`OFFICIAL_PROVIDER_BASE_URL`.
+
+Keep the two Sub2API URLs separate:
+
+- `OFFICIAL_PROVIDER_BASE_URL` is returned to clients and should be the public
+  model gateway, for example `https://api.brevyn.org`.
+- `SUB2API_BASE_URL` is used only by the API and worker to call Sub2API Admin
+  APIs. It must be reachable from the containers, for example
+  `http://sub2api:8080` on a shared Docker network or
+  `http://host.docker.internal:8080` with `host-gateway`.
+
+PostgreSQL and Redis are local infrastructure. The default compose file binds
+their host ports to `127.0.0.1` for debugging and should not be exposed publicly.

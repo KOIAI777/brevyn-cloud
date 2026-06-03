@@ -24,8 +24,9 @@ type OverviewSummary struct {
 }
 
 type UsageSummary struct {
-	Usage  UsageMeter  `json:"usage"`
-	Ledger UsageLedger `json:"ledger"`
+	Usage       UsageMeter       `json:"usage"`
+	Ledger      UsageLedger      `json:"ledger"`
+	Attribution UsageAttribution `json:"attribution"`
 }
 
 type UsageMeter struct {
@@ -47,6 +48,45 @@ type UsageLedger struct {
 	RedemptionCountToday    int64   `json:"redemptionCountToday"`
 	SubscriptionCountToday  int64   `json:"subscriptionCountToday"`
 	GatewayFailedToday      int64   `json:"gatewayFailedToday"`
+}
+
+type UsageAttribution struct {
+	Products []ProductUsageAttribution `json:"products"`
+	Groups   []GroupUsageAttribution   `json:"groups"`
+	Users    []UserUsageAttribution    `json:"users"`
+}
+
+type ProductUsageAttribution struct {
+	ProductID         string     `json:"productId"`
+	SKU               string     `json:"sku"`
+	Name              string     `json:"name"`
+	BenefitType       string     `json:"benefitType"`
+	RedeemedCount     int64      `json:"redeemedCount"`
+	BalanceValueUSD   float64    `json:"balanceValueUsd"`
+	SubscriptionCount int64      `json:"subscriptionCount"`
+	RevenueCNY        float64    `json:"revenueCny"`
+	LastRedeemedAt    *time.Time `json:"lastRedeemedAt"`
+}
+
+type GroupUsageAttribution struct {
+	ExternalGroupID   int64   `json:"externalGroupId"`
+	Name              string  `json:"name"`
+	SubscriptionType  string  `json:"subscriptionType"`
+	RedeemedCount     int64   `json:"redeemedCount"`
+	BalanceValueUSD   float64 `json:"balanceValueUsd"`
+	SubscriptionCount int64   `json:"subscriptionCount"`
+	ActiveKeyCount    int64   `json:"activeKeyCount"`
+}
+
+type UserUsageAttribution struct {
+	UserID             string     `json:"userId"`
+	Email              string     `json:"email"`
+	WalletBalanceUSD   float64    `json:"walletBalanceUsd"`
+	RedeemedCount      int64      `json:"redeemedCount"`
+	BalanceValueUSD    float64    `json:"balanceValueUsd"`
+	SubscriptionCount  int64      `json:"subscriptionCount"`
+	GatewayFailedCount int64      `json:"gatewayFailedCount"`
+	LastRedeemedAt     *time.Time `json:"lastRedeemedAt"`
 }
 
 type ModelCatalogItem struct {

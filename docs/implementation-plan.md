@@ -925,6 +925,7 @@ DATABASE_URL
 REDIS_URL
 
 APP_BASE_URL
+ADMIN_BASE_URL
 JWT_ACCESS_SECRET
 JWT_REFRESH_SECRET
 SESSION_SECRET
@@ -935,7 +936,6 @@ SUB2API_ADMIN_API_KEY
 SUB2API_DEFAULT_GROUP_ID
 
 OFFICIAL_PROVIDER_BASE_URL
-OFFICIAL_PROVIDER_DEFAULT_MODEL
 DEVICE_SOFT_LIMIT
 ```
 
@@ -944,9 +944,20 @@ Production values:
 ```text
 PORT=4000
 APP_BASE_URL=https://cloud.brevyn.org
-SUB2API_BASE_URL=http://127.0.0.1:8080
+ADMIN_BASE_URL=https://cloud.brevyn.org/admin
+SUB2API_BASE_URL=http://host.docker.internal:8080
 OFFICIAL_PROVIDER_BASE_URL=https://api.brevyn.org
 DEVICE_SOFT_LIMIT=3
+```
+
+Production distinction:
+
+```text
+OFFICIAL_PROVIDER_BASE_URL is returned to the client and must be the public Sub2API reverse proxy.
+SUB2API_BASE_URL is used by Brevyn Cloud only and must be reachable from the api/worker containers.
+If Sub2API is in another compose on the same Linux host, either join a shared Docker network or enable host.docker.internal via host-gateway.
+SUB2API_DEFAULT_GROUP_ID is only an optional bootstrap fallback. The product default group should be selected in the admin Settings page after syncing Sub2API groups. Runtime provisioning resolves the default group from app_settings first.
+OFFICIAL_PROVIDER_DEFAULT_MODEL is optional and should normally stay empty. Available/default models should come from the synced Sub2API group model catalog and the client/user selection.
 ```
 
 ## 11. What To Build First

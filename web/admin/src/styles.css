@@ -1179,6 +1179,47 @@ code {
   overflow-wrap: anywhere;
 }
 
+.readiness-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.readiness-row {
+  display: grid;
+  grid-template-columns: 22px minmax(220px, 1fr) max-content minmax(260px, 1.25fr);
+  gap: 12px;
+  align-items: center;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  background: #fbfdf8;
+}
+
+.readiness-row > svg {
+  color: var(--green);
+}
+
+.readiness-row div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.readiness-row strong,
+.readiness-row span,
+.readiness-row small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.readiness-row span,
+.readiness-row small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .audit-summary {
   display: inline-block;
   max-width: 520px;
@@ -1728,6 +1769,7 @@ code {
   .sync-preview-row,
   .range-inputs,
   .diagnostic-row,
+  .readiness-row,
   .queue-diagnostics-grid,
   .timeline-list div {
     grid-template-columns: 1fr;

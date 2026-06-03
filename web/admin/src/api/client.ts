@@ -596,6 +596,14 @@ export type DiagnosticsSnapshot = {
     error: string;
     checkedAt: string;
   };
+  productionReadiness: Array<{
+    key: string;
+    label: string;
+    status: string;
+    detail: string;
+    action: string;
+    section: string;
+  }>;
 };
 
 export type AdminOverview = {
@@ -635,6 +643,38 @@ export type UsageSummary = {
     redemptionCountToday: number;
     subscriptionCountToday: number;
     gatewayFailedToday: number;
+  };
+  attribution: {
+    products: Array<{
+      productId: string;
+      sku: string;
+      name: string;
+      benefitType: string;
+      redeemedCount: number;
+      balanceValueUsd: number;
+      subscriptionCount: number;
+      revenueCny: number;
+      lastRedeemedAt: string | null;
+    }>;
+    groups: Array<{
+      externalGroupId: number;
+      name: string;
+      subscriptionType: string;
+      redeemedCount: number;
+      balanceValueUsd: number;
+      subscriptionCount: number;
+      activeKeyCount: number;
+    }>;
+    users: Array<{
+      userId: string;
+      email: string;
+      walletBalanceUsd: number;
+      redeemedCount: number;
+      balanceValueUsd: number;
+      subscriptionCount: number;
+      gatewayFailedCount: number;
+      lastRedeemedAt: string | null;
+    }>;
   };
 };
 

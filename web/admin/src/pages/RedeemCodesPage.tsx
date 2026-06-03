@@ -732,6 +732,7 @@ export function RedeemCodesPage() {
               placeholder="例如：LDXP-20260601-001"
               value={orderRef}
             />
+            <span className="field-hint">同一来源下订单号只能生成一次，重复提交会返回已有批次。</span>
           </label>
           <label className="wide-field">
             内部备注

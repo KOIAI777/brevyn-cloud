@@ -1590,6 +1590,24 @@ cloud.brevyn.org:
   proxy_pass http://127.0.0.1:4000
 ```
 
+Production wiring rules:
+
+```text
+OFFICIAL_PROVIDER_BASE_URL is the public model gateway URL returned to Electron/App users.
+Use: https://api.brevyn.org
+
+SUB2API_BASE_URL is the private Admin API URL used only by Brevyn Cloud server/worker.
+Use an address reachable from the Cloud container:
+  - same Docker network: http://sub2api:8080
+  - host reverse proxy / host service: http://host.docker.internal:8080 with host-gateway enabled
+  - host networking: http://127.0.0.1:8080
+
+Postgres and Redis should not be exposed publicly. The compose defaults bind them to 127.0.0.1 for local inspection only.
+Production APP_BASE_URL, ADMIN_BASE_URL, and OFFICIAL_PROVIDER_BASE_URL must be HTTPS and must not point to localhost/127.0.0.1.
+ENCRYPTION_KEY must be stable across deploys because it protects stored Sub2API admin settings, user API keys, and deterministic shadow-user passwords.
+SUB2API_DEFAULT_GROUP_ID is a bootstrap fallback, not the product source of truth. The default group is chosen in the Brevyn Cloud admin Settings page and stored in app_settings after Sub2API groups are synced.
+```
+
 ## 16. Development Phases
 
 ### Phase 1: Login, Key, Redeem, Balance

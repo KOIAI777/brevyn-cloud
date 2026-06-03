@@ -16,6 +16,14 @@ type CatalogService struct {
 	postgres *pgxpool.Pool
 }
 
+type duplicateOrderRefError struct {
+	Batch RedeemBatchItem
+}
+
+func (e *duplicateOrderRefError) Error() string {
+	return "order_ref_already_exists"
+}
+
 func NewCatalogService(postgres *pgxpool.Pool) *CatalogService {
 	return &CatalogService{postgres: postgres}
 }
@@ -193,6 +201,14 @@ func (s *CatalogService) GenerateRedeemCodes(ctx context.Context, req generateRe
 	if err := validateProductForGeneration(product); err != nil {
 		return nil, err
 	}
+	if err := lockRedeemOrderRef(ctx, tx, req.Source, req.OrderRef); err != nil {
+		return nil, err
+	}
+	if batch, exists, err := findRedeemBatchByOrderRef(ctx, tx, req.Source, req.OrderRef); err != nil {
+		return nil, err
+	} else if exists {
+		return nil, &duplicateOrderRefError{Batch: batch}
+	}
 
 	var batchDBID int64
 	var batchPublicID string
@@ -247,6 +263,61 @@ func (s *CatalogService) GenerateRedeemCodes(ctx context.Context, req generateRe
 		"product": product,
 		"codes":   generated,
 	}, nil
+}
+
+func lockRedeemOrderRef(ctx context.Context, tx pgx.Tx, source, orderRef string) error {
+	if strings.TrimSpace(orderRef) == "" {
+		return nil
+	}
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, redeemOrderRefLockKey(source, orderRef))
+	return err
+}
+
+func redeemOrderRefLockKey(source, orderRef string) string {
+	return strings.ToLower(strings.TrimSpace(source)) + "\x00" + strings.ToLower(strings.TrimSpace(orderRef))
+}
+
+func findRedeemBatchByOrderRef(ctx context.Context, tx pgx.Tx, source, orderRef string) (RedeemBatchItem, bool, error) {
+	if strings.TrimSpace(orderRef) == "" {
+		return RedeemBatchItem{}, false, nil
+	}
+	var item RedeemBatchItem
+	err := tx.QueryRow(ctx, `
+		SELECT b.public_id, b.name, b.source, b.order_ref, b.quantity, b.status, b.notes,
+			coalesce(p.public_id, ''), coalesce(p.name, ''),
+			count(rc.id) FILTER (WHERE rc.status = 'unused')::int AS unused_count,
+			count(rc.id) FILTER (WHERE rc.status = 'used')::int AS used_count,
+			b.created_at
+		FROM redeem_code_batches b
+		LEFT JOIN products p ON p.id = b.product_id
+		LEFT JOIN redeem_codes rc ON rc.batch_id = b.id
+		WHERE lower(b.source) = lower($1)
+			AND lower(b.order_ref) = lower($2)
+			AND b.order_ref <> ''
+		GROUP BY b.id, p.public_id, p.name
+		ORDER BY b.created_at DESC
+		LIMIT 1
+	`, strings.TrimSpace(source), strings.TrimSpace(orderRef)).Scan(
+		&item.ID,
+		&item.Name,
+		&item.Source,
+		&item.OrderRef,
+		&item.Quantity,
+		&item.Status,
+		&item.Notes,
+		&item.ProductID,
+		&item.ProductName,
+		&item.UnusedCount,
+		&item.UsedCount,
+		&item.CreatedAt,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RedeemBatchItem{}, false, nil
+	}
+	if err != nil {
+		return RedeemBatchItem{}, false, err
+	}
+	return item, true, nil
 }
 
 func (s *CatalogService) DisableRedeemCode(ctx context.Context, codeID string) (RedeemCodeItem, error) {

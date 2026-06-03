@@ -193,11 +193,15 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const groups = useQuery({ queryKey: ["groups"], queryFn: getGroups });
   const wallet = useQuery({ queryKey: ["wallet"], queryFn: getWallet });
   const keys = useQuery({ queryKey: ["api-keys"], queryFn: getAPIKeys });
+  const groupRows = groups.data?.items ?? [];
+  const shouldFetchProvider = selectedGroupId !== null || (groups.isFetched && groupRows.length === 0);
   const providerConfig = useQuery({
-    queryKey: ["official-provider", selectedGroupId],
+    queryKey: ["official-provider", selectedGroupId ?? "default"],
     queryFn: () => getOfficialProvider(selectedGroupId),
-    enabled: selectedGroupId !== null,
+    enabled: shouldFetchProvider,
     refetchOnWindowFocus: false,
+    refetchInterval: (query) =>
+      query.state.data?.status === "provisioning" ? Math.max(query.state.data.retryAfterSeconds ?? 10, 5) * 1000 : false,
     retry: false,
     staleTime: 5 * 60 * 1000
   });
@@ -228,7 +232,6 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     }
   });
 
-  const groupRows = groups.data?.items ?? [];
   const providerGroupId = providerConfig.data?.apiKey?.externalGroupId || providerConfig.data?.gateway?.defaultGroupId || null;
   const currentGatewayGroupId =
     me.data?.currentGroup?.externalGroupId || me.data?.gateway?.defaultGroupId || providerGroupId || null;

@@ -86,7 +86,169 @@ func (s *DashboardQueryService) UsageSummary(ctx context.Context) (UsageSummary,
 		summary.Usage.Status = "sync_error"
 		summary.Usage.Source = "sub2api_admin_usage_stats_error"
 	}
+	attribution, err := s.UsageAttribution(ctx)
+	if err != nil {
+		return UsageSummary{}, err
+	}
+	summary.Attribution = attribution
 	return summary, nil
+}
+
+func (s *DashboardQueryService) UsageAttribution(ctx context.Context) (UsageAttribution, error) {
+	products, err := s.productUsageAttribution(ctx)
+	if err != nil {
+		return UsageAttribution{}, err
+	}
+	groups, err := s.groupUsageAttribution(ctx)
+	if err != nil {
+		return UsageAttribution{}, err
+	}
+	users, err := s.userUsageAttribution(ctx)
+	if err != nil {
+		return UsageAttribution{}, err
+	}
+	return UsageAttribution{Products: products, Groups: groups, Users: users}, nil
+}
+
+func (s *DashboardQueryService) productUsageAttribution(ctx context.Context) ([]ProductUsageAttribution, error) {
+	rows, err := s.postgres.Query(ctx, `
+		SELECT
+			coalesce(p.public_id, ''),
+			coalesce(p.sku, ''),
+			coalesce(p.name, '未绑定商品'),
+			coalesce(p.benefit_type, rr.kind),
+			count(rr.id),
+			coalesce(sum(rr.value) FILTER (WHERE rr.kind = 'balance'), 0),
+			count(rr.id) FILTER (WHERE rr.kind = 'subscription'),
+			coalesce(sum(coalesce(p.price_cny, 0)), 0),
+			max(rr.created_at)
+		FROM redeem_redemptions rr
+		LEFT JOIN products p ON p.id = rr.product_id
+		WHERE rr.created_at >= date_trunc('day', now())
+		GROUP BY p.public_id, p.sku, p.name, p.benefit_type, rr.kind
+		ORDER BY count(rr.id) DESC, coalesce(sum(coalesce(p.price_cny, 0)), 0) DESC
+		LIMIT 8
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []ProductUsageAttribution{}
+	for rows.Next() {
+		var item ProductUsageAttribution
+		if err := rows.Scan(
+			&item.ProductID,
+			&item.SKU,
+			&item.Name,
+			&item.BenefitType,
+			&item.RedeemedCount,
+			&item.BalanceValueUSD,
+			&item.SubscriptionCount,
+			&item.RevenueCNY,
+			&item.LastRedeemedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *DashboardQueryService) groupUsageAttribution(ctx context.Context) ([]GroupUsageAttribution, error) {
+	rows, err := s.postgres.Query(ctx, `
+		SELECT
+			rr.external_group_id,
+			coalesce(nullif(gg.name, ''), CASE WHEN rr.external_group_id > 0 THEN 'Sub2API group #' || rr.external_group_id::text ELSE '未绑定分组' END),
+			coalesce(nullif(gg.subscription_type, ''), 'unknown'),
+			count(rr.id),
+			coalesce(sum(rr.value) FILTER (WHERE rr.kind = 'balance'), 0),
+			count(rr.id) FILTER (WHERE rr.kind = 'subscription'),
+			coalesce(keys.active_key_count, 0)
+		FROM redeem_redemptions rr
+		LEFT JOIN gateway_groups gg ON gg.provider = 'sub2api' AND gg.external_group_id = rr.external_group_id
+		LEFT JOIN LATERAL (
+			SELECT count(*) AS active_key_count
+			FROM gateway_api_keys gak
+			WHERE gak.provider = 'sub2api'
+				AND gak.external_group_id = rr.external_group_id
+				AND gak.status = 'active'
+		) keys ON true
+		WHERE rr.created_at >= date_trunc('day', now())
+		GROUP BY rr.external_group_id, gg.name, gg.subscription_type, keys.active_key_count
+		ORDER BY count(rr.id) DESC, rr.external_group_id ASC
+		LIMIT 8
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []GroupUsageAttribution{}
+	for rows.Next() {
+		var item GroupUsageAttribution
+		if err := rows.Scan(
+			&item.ExternalGroupID,
+			&item.Name,
+			&item.SubscriptionType,
+			&item.RedeemedCount,
+			&item.BalanceValueUSD,
+			&item.SubscriptionCount,
+			&item.ActiveKeyCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *DashboardQueryService) userUsageAttribution(ctx context.Context) ([]UserUsageAttribution, error) {
+	rows, err := s.postgres.Query(ctx, `
+		SELECT
+			u.public_id,
+			u.email,
+			coalesce(wallet.balance, 0),
+			count(rr.id),
+			coalesce(sum(rr.value) FILTER (WHERE rr.kind = 'balance'), 0),
+			count(rr.id) FILTER (WHERE rr.kind = 'subscription'),
+			count(rr.id) FILTER (WHERE rr.status = 'gateway_failed'),
+			max(rr.created_at)
+		FROM redeem_redemptions rr
+		JOIN users u ON u.id = rr.user_id
+		LEFT JOIN LATERAL (
+			SELECT sum(amount) AS balance
+			FROM wallet_transactions wt
+			WHERE wt.user_id = u.id
+		) wallet ON true
+		WHERE rr.created_at >= date_trunc('day', now())
+		GROUP BY u.id, wallet.balance
+		ORDER BY count(rr.id) DESC, coalesce(sum(rr.value) FILTER (WHERE rr.kind = 'balance'), 0) DESC
+		LIMIT 8
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := []UserUsageAttribution{}
+	for rows.Next() {
+		var item UserUsageAttribution
+		if err := rows.Scan(
+			&item.UserID,
+			&item.Email,
+			&item.WalletBalanceUSD,
+			&item.RedeemedCount,
+			&item.BalanceValueUSD,
+			&item.SubscriptionCount,
+			&item.GatewayFailedCount,
+			&item.LastRedeemedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (s *DashboardQueryService) ListModels(ctx context.Context) ([]ModelCatalogItem, error) {

@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -80,7 +81,7 @@ func Load() (*Config, error) {
 			"OFFICIAL_PROVIDER_BASE_URL",
 			"https://api.brevyn.org",
 		),
-		OfficialProviderDefaultModel: getenv("OFFICIAL_PROVIDER_DEFAULT_MODEL", "claude-sonnet-4-5"),
+		OfficialProviderDefaultModel: getenv("OFFICIAL_PROVIDER_DEFAULT_MODEL", ""),
 	}
 
 	groupID, err := strconv.ParseInt(getenv("SUB2API_DEFAULT_GROUP_ID", "0"), 10, 64)
@@ -106,7 +107,6 @@ func (c *Config) validateProduction() error {
 		"JWT_REFRESH_SECRET":       c.JWTRefreshSecret,
 		"ADMIN_SEED_EMAIL":         c.AdminSeedEmail,
 		"ADMIN_SEED_PASSWORD":      c.AdminSeedPassword,
-		"SUB2API_DEFAULT_GROUP_ID": strconv.FormatInt(c.Sub2APIDefaultGroupID, 10),
 	}
 	for name, value := range required {
 		if strings.TrimSpace(value) == "" || value == "0" {
@@ -130,6 +130,34 @@ func (c *Config) validateProduction() error {
 	if strings.TrimSpace(c.Sub2APIAdminAPIKey) == "" &&
 		(strings.TrimSpace(c.Sub2APIAdminEmail) == "" || strings.TrimSpace(c.Sub2APIAdminPassword) == "") {
 		return fmt.Errorf("SUB2API_ADMIN_API_KEY or SUB2API_ADMIN_EMAIL/SUB2API_ADMIN_PASSWORD is required in production")
+	}
+	for name, value := range map[string]string{
+		"APP_BASE_URL":               c.AppBaseURL,
+		"ADMIN_BASE_URL":             c.AdminBaseURL,
+		"OFFICIAL_PROVIDER_BASE_URL": c.OfficialProviderBaseURL,
+	} {
+		if err := validateProductionPublicURL(name, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateProductionPublicURL(name, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fmt.Errorf("%s is required in production", name)
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("%s must be an absolute URL in production", name)
+	}
+	if parsed.Scheme != "https" {
+		return fmt.Errorf("%s must use https in production", name)
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "localhost" || host == "0.0.0.0" || host == "::1" || strings.HasPrefix(host, "127.") {
+		return fmt.Errorf("%s must not point to a local address in production", name)
 	}
 	return nil
 }

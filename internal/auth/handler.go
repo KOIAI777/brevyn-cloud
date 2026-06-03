@@ -754,7 +754,7 @@ func (h *Handler) gatewayGroupByExternalID(ctx context.Context, externalGroupID 
 			gg.rpm_limit,
 			gg.status,
 			(
-				SELECT count(*)
+				SELECT count(DISTINCT ggm.model_id)
 				FROM gateway_group_models ggm
 				WHERE ggm.provider = 'sub2api'
 					AND ggm.status = 'active'
@@ -795,7 +795,7 @@ func (h *Handler) userGatewayGroups(ctx context.Context, userID int64, currentGr
 			GROUP BY external_group_id
 		),
 		model_counts AS (
-			SELECT external_group_id, count(*) AS model_count
+			SELECT external_group_id, count(DISTINCT model_id) AS model_count
 			FROM gateway_group_models
 			WHERE provider = 'sub2api' AND status = 'active'
 			GROUP BY external_group_id

@@ -80,7 +80,7 @@ func NewHandler(cfg *config.Config, postgres *pgxpool.Pool, redisClients ...*red
 		dashboard:     NewDashboardQueryService(postgres, gateway),
 		auditQueries:  NewAuditQueryService(postgres),
 		operations:    NewGatewayOperationService(postgres),
-		diagnostics:   NewDiagnosticsService(postgres, redisClient, gateway),
+		diagnostics:   NewDiagnosticsService(cfg, postgres, redisClient, gateway),
 		subscriptions: NewSubscriptionService(gateway),
 		limiter:       newLoginLimiter(5, 15*time.Minute, 15*time.Minute),
 		sessions: &sessionManager{

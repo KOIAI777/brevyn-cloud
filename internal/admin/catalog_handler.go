@@ -549,6 +549,15 @@ func (h *Handler) GenerateRedeemCodes(c *gin.Context) {
 	admin, _ := currentAdmin(c)
 	result, err := h.catalog.GenerateRedeemCodes(c.Request.Context(), req, admin.ID, expiresAt)
 	if err != nil {
+		var duplicateOrder *duplicateOrderRefError
+		if errors.As(err, &duplicateOrder) {
+			c.JSON(http.StatusConflict, gin.H{
+				"error":  "order_ref_already_exists",
+				"detail": fmt.Sprintf("订单号 %s 已生成批次 %s，未重复生成卡密", req.OrderRef, duplicateOrder.Batch.Name),
+				"batch":  duplicateOrder.Batch,
+			})
+			return
+		}
 		if errors.Is(err, pgx.ErrNoRows) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "product_not_found"})
 			return

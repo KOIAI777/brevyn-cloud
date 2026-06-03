@@ -1,12 +1,13 @@
-import { AlertTriangle, FilterX, RefreshCw, RotateCcw, Search } from "lucide-react";
+import { AlertTriangle, FilterX, RefreshCw, RotateCcw, Search, TimerReset } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { DataTable } from "../components/DataTable";
 import { DangerConfirmModal } from "../components/DangerConfirmModal";
 import { PageHeader } from "../components/PageHeader";
 import { PaginationRow } from "../components/PaginationRow";
+import { StatGrid } from "../components/StatGrid";
 import { StatusBadge } from "../components/StatusBadge";
-import { getGatewayOperations, retryGatewayOperation } from "../api/client";
+import { getDiagnostics, getGatewayOperations, retryFailedGatewayOperations, retryGatewayOperation } from "../api/client";
 
 function operationTone(status: string) {
   if (status === "succeeded") return "ok";
@@ -41,8 +42,10 @@ export function GatewayOperationsPage() {
   const [dateTo, setDateTo] = useState("");
   const [pageSize, setPageSize] = useState(50);
   const [offset, setOffset] = useState(0);
+  const [autoRefresh, setAutoRefresh] = useState(true);
   const [notice, setNotice] = useState("");
   const [retryTarget, setRetryTarget] = useState<{ id: string; label: string } | null>(null);
+  const [retryFailedOpen, setRetryFailedOpen] = useState(false);
   const resetOffset = () => setOffset(0);
   const clearFilters = () => {
     setSearch("");
@@ -72,6 +75,11 @@ export function GatewayOperationsPage() {
         offset
       })
   });
+  const diagnostics = useQuery({
+    queryKey: ["admin-diagnostics", "queue"],
+    queryFn: getDiagnostics,
+    refetchInterval: autoRefresh ? 10000 : false
+  });
   const retry = useMutation({
     mutationFn: ({ id, auditReason }: { id: string; auditReason: string }) => retryGatewayOperation(id, { auditReason }),
     onSuccess: (result) => {
@@ -82,7 +90,28 @@ export function GatewayOperationsPage() {
       void queryClient.invalidateQueries({ queryKey: ["admin-audit-logs"] });
     }
   });
+  const retryFailed = useMutation({
+    mutationFn: ({ auditReason }: { auditReason: string }) => retryFailedGatewayOperations({ auditReason }),
+    onSuccess: (result) => {
+      setRetryFailedOpen(false);
+      setNotice(`已批量重新入队 ${result.retried} 个可重试失败任务。`);
+      void queryClient.invalidateQueries({ queryKey: ["admin-gateway-operations"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin-diagnostics"] });
+      void queryClient.invalidateQueries({ queryKey: ["admin-audit-logs"] });
+    }
+  });
   const rows = operations.data?.items ?? [];
+  const queue = diagnostics.data?.diagnostics.queue;
+  const retryableFailed = queue?.retryableFailed ?? 0;
+  const refetchOperations = operations.refetch;
+
+  useEffect(() => {
+    if (!autoRefresh) return;
+    const timer = window.setInterval(() => {
+      void refetchOperations();
+    }, 10000);
+    return () => window.clearInterval(timer);
+  }, [autoRefresh, refetchOperations]);
 
   return (
     <div className="page-stack">
@@ -91,11 +120,34 @@ export function GatewayOperationsPage() {
         title="同步队列"
         description="查看 Brevyn Cloud 写入 Sub2API 的后台任务、失败原因、重试次数和死信状态。"
         actions={
-          <button className="secondary-action" disabled={operations.isFetching} onClick={() => void operations.refetch()} type="button">
-            <RefreshCw size={16} />
-            <span>{operations.isFetching ? "刷新中" : "刷新"}</span>
-          </button>
+          <>
+            <button className="secondary-action" onClick={() => setAutoRefresh((value) => !value)} type="button">
+              <TimerReset size={16} />
+              <span>{autoRefresh ? "自动刷新开" : "自动刷新关"}</span>
+            </button>
+            <button
+              className="secondary-action"
+              disabled={retryFailed.isPending || retryableFailed === 0}
+              onClick={() => setRetryFailedOpen(true)}
+              type="button"
+            >
+              <RotateCcw size={16} />
+              <span>{retryFailed.isPending ? "入队中" : "批量重试"}</span>
+            </button>
+            <button className="secondary-action" disabled={operations.isFetching} onClick={() => void operations.refetch()} type="button">
+              <RefreshCw size={16} />
+              <span>{operations.isFetching ? "刷新中" : "刷新"}</span>
+            </button>
+          </>
         }
+      />
+      <StatGrid
+        stats={[
+          { label: "Ready Now", value: String(queue?.readyNow ?? 0), delta: `${queue?.pending ?? 0} pending`, tone: (queue?.readyNow ?? 0) > 0 ? "amber" : "green", icon: RefreshCw },
+          { label: "Running", value: String(queue?.running ?? 0), delta: `${queue?.staleRunning ?? 0} stale`, tone: (queue?.staleRunning ?? 0) > 0 ? "red" : "cyan", icon: TimerReset },
+          { label: "Failed", value: String(queue?.failed ?? 0), delta: `${retryableFailed} retryable`, tone: retryableFailed > 0 ? "amber" : "green", icon: RotateCcw },
+          { label: "Dead Letter", value: String(queue?.deadLetter ?? 0), delta: `${queue?.total ?? 0} total`, tone: (queue?.deadLetter ?? 0) > 0 ? "red" : "green", icon: AlertTriangle }
+        ]}
       />
       <section className="panel warning-panel">
         <AlertTriangle size={18} />
@@ -241,6 +293,7 @@ export function GatewayOperationsPage() {
       {operations.isLoading ? <div className="panel inline-state">正在加载同步队列...</div> : null}
       {operations.isError ? <div className="panel inline-state danger-text">同步队列加载失败。</div> : null}
       {retry.isError ? <div className="panel inline-state danger-text">重新入队失败：{retry.error.message}</div> : null}
+      {retryFailed.isError ? <div className="panel inline-state danger-text">批量重试失败：{retryFailed.error.message}</div> : null}
       <div className="wide-table operations-table">
         <DataTable
           rows={rows}
@@ -331,6 +384,15 @@ export function GatewayOperationsPage() {
         onConfirm={(auditReason) => {
           if (retryTarget) retry.mutate({ id: retryTarget.id, auditReason });
         }}
+      />
+      <DangerConfirmModal
+        open={retryFailedOpen}
+        title="批量重试失败任务"
+        description={`将重新入队 ${retryableFailed} 个可重试失败任务。请确认 Sub2API 配置、鉴权或限流问题已经处理。`}
+        confirmLabel="确认批量重试"
+        pending={retryFailed.isPending}
+        onCancel={() => setRetryFailedOpen(false)}
+        onConfirm={(auditReason) => retryFailed.mutate({ auditReason })}
       />
     </div>
   );
