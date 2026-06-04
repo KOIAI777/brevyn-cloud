@@ -572,6 +572,21 @@ func (c *Client) FindUserByEmail(ctx context.Context, email string) (*User, erro
 	return nil, fmt.Errorf("sub2api user not found")
 }
 
+func (c *Client) GetUser(ctx context.Context, userID int64) (*User, error) {
+	if userID <= 0 {
+		return nil, fmt.Errorf("user id is required")
+	}
+
+	var out envelope[User]
+	if err := c.doAdminJSON(ctx, http.MethodGet, fmt.Sprintf("/api/v1/admin/users/%d", userID), nil, "", &out); err != nil {
+		return nil, err
+	}
+	if out.Code != 0 {
+		return nil, fmt.Errorf("sub2api get user failed: %s", out.Message)
+	}
+	return &out.Data, nil
+}
+
 func (c *Client) UpdateUserBalance(ctx context.Context, userID int64, input BalanceRequest, idempotencyKey string) error {
 	var out envelope[User]
 	if err := c.doAdminJSON(ctx, http.MethodPost, fmt.Sprintf("/api/v1/admin/users/%d/balance", userID), input, idempotencyKey, &out); err != nil {

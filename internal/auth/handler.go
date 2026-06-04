@@ -18,6 +18,7 @@ import (
 	"github.com/brevyn/brevyn-cloud/internal/config"
 	"github.com/brevyn/brevyn-cloud/internal/gateway/gatewayerror"
 	"github.com/brevyn/brevyn-cloud/internal/gateway/operations"
+	"github.com/brevyn/brevyn-cloud/internal/gateway/sub2api"
 	redeemsvc "github.com/brevyn/brevyn-cloud/internal/redeem"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -26,6 +27,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
@@ -37,6 +39,8 @@ type Handler struct {
 	postgres        *pgxpool.Pool
 	redis           *redis.Client
 	gatewaySync     *redeemsvc.GatewaySyncService
+	sub2            *sub2api.Client
+	entitlementOnce singleflight.Group
 	provisionSlots  chan struct{}
 	registerLimiter *registerLimiter
 	loginLimiter    *loginLimiter
@@ -150,16 +154,33 @@ type redeemResult struct {
 	PlainAPIKey string                `json:"plainApiKey,omitempty"`
 }
 
-func NewHandler(cfg *config.Config, postgres *pgxpool.Pool, redisClient *redis.Client) *Handler {
+func NewHandler(cfg *config.Config, postgres *pgxpool.Pool, redisClient *redis.Client, sub2Clients ...*sub2api.Client) *Handler {
 	var provisionSlots chan struct{}
 	if cfg != nil && cfg.RegisterProvisionConcurrency > 0 {
 		provisionSlots = make(chan struct{}, cfg.RegisterProvisionConcurrency)
+	}
+	var sub2 *sub2api.Client
+	if len(sub2Clients) > 0 {
+		sub2 = sub2Clients[0]
+	}
+	if sub2 == nil {
+		var sub2Config sub2api.ClientConfig
+		if cfg != nil {
+			sub2Config = sub2api.ClientConfig{
+				BaseURL:       cfg.Sub2APIBaseURL,
+				AdminAPIKey:   cfg.Sub2APIAdminAPIKey,
+				AdminEmail:    cfg.Sub2APIAdminEmail,
+				AdminPassword: cfg.Sub2APIAdminPassword,
+			}
+		}
+		sub2 = sub2api.NewClient(sub2Config)
 	}
 	return &Handler{
 		cfg:             cfg,
 		postgres:        postgres,
 		redis:           redisClient,
 		gatewaySync:     redeemsvc.NewGatewaySyncService(cfg, postgres, redisClient),
+		sub2:            sub2,
 		provisionSlots:  provisionSlots,
 		registerLimiter: newRegisterLimiter(redisClient),
 		loginLimiter:    newLoginLimiter(redisClient),

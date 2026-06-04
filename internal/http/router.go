@@ -54,6 +54,7 @@ func NewRouter(cfg *config.Config, logger *slog.Logger, deps Dependencies) http.
 		{
 			userRoutes.GET("/me", deps.Auth.Me)
 			userRoutes.GET("/me/groups", deps.Auth.Groups)
+			userRoutes.GET("/me/gateway-entitlements", deps.Auth.GatewayEntitlements)
 			userRoutes.GET("/me/wallet", deps.Auth.Wallet)
 			userRoutes.GET("/me/api-keys", deps.Auth.APIKeys)
 			userRoutes.GET("/api-keys/system", deps.Auth.SystemAPIKey)

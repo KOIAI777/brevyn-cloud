@@ -54,7 +54,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	router := httpapi.NewRouter(cfg, logger, httpapi.Dependencies{
 		Health:    health.NewHandler(postgres, redisClient),
 		Admin:     admin.NewHandler(cfg, postgres, redisClient),
-		Auth:      auth.NewHandler(cfg, postgres, redisClient),
+		Auth:      auth.NewHandler(cfg, postgres, redisClient, sub2),
 		Providers: providers.NewHandler(cfg, sub2),
 	})
 
