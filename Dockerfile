@@ -21,7 +21,7 @@ RUN npm ci
 COPY web/admin/ ./
 RUN npm run build
 
-FROM alpine:3.20
+FROM postgres:18-alpine
 
 WORKDIR /app
 
@@ -34,4 +34,5 @@ COPY --from=admin-web-build /src/web/admin/dist /app/web/admin/dist
 
 EXPOSE 4000
 
+ENTRYPOINT []
 CMD ["brevyn-api"]

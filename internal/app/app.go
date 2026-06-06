@@ -25,6 +25,7 @@ type App struct {
 	server   *http.Server
 	postgres *pgxpool.Pool
 	redis    *redis.Client
+	admin    *admin.Handler
 }
 
 func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, error) {
@@ -50,11 +51,13 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		AdminPassword: cfg.Sub2APIAdminPassword,
 	})
 
+	adminHandler := admin.NewHandlerWithOptions(cfg, postgres, redisClient, admin.WithBackupService())
 	router := httpapi.NewRouter(cfg, logger, httpapi.Dependencies{
 		Health: health.NewHandler(postgres, redisClient),
-		Admin:  admin.NewHandler(cfg, postgres, redisClient),
+		Admin:  adminHandler,
 		Auth:   auth.NewHandler(cfg, postgres, redisClient, sub2),
 	})
+	adminHandler.StartBackgroundServices()
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
@@ -71,6 +74,7 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 		server:   server,
 		postgres: postgres,
 		redis:    redisClient,
+		admin:    adminHandler,
 	}, nil
 }
 
@@ -102,6 +106,9 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) close() {
+	if a.admin != nil {
+		a.admin.StopBackgroundServices()
+	}
 	if a.redis != nil {
 		_ = a.redis.Close()
 	}

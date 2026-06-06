@@ -240,6 +240,63 @@ export type Sub2APISettingsInput = {
   defaultGroupId?: number;
 };
 
+export type BackupRuntimeConfig = {
+  backupDir: string;
+  retentionDays: number;
+  restoreEnabled: boolean;
+  s3Configured: boolean;
+  scheduleEnabled: boolean;
+  scheduleCronExpr: string;
+  postgresClientNote: string;
+};
+
+export type BackupS3Config = {
+  endpoint: string;
+  region: string;
+  bucket: string;
+  accessKeyId: string;
+  secretAccessKey?: string;
+  prefix: string;
+  forcePathStyle: boolean;
+  secretConfigured: boolean;
+  storageConfigured: boolean;
+};
+
+export type BackupScheduleConfig = {
+  enabled: boolean;
+  cronExpr: string;
+  retainDays: number;
+  retainCount: number;
+};
+
+export type BackupRecord = {
+  id: string;
+  status: "pending" | "running" | "completed" | "failed" | string;
+  progress: string;
+  backupType: string;
+  storageKind: string;
+  fileName: string;
+  filePath: string;
+  s3Key: string;
+  sizeBytes: number;
+  sha256: string;
+  triggeredBy: string;
+  errorMessage: string;
+  startedAt: string;
+  finishedAt: string | null;
+  expiresAt: string | null;
+  restoreStatus: "" | "running" | "completed" | "failed" | string;
+  restoreError: string;
+  restoredAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type BackupTestResult = {
+  ok: boolean;
+  message: string;
+};
+
 export type Sub2APIGroupPreview = {
   externalGroupId: number;
   name: string;
@@ -1115,6 +1172,86 @@ export function updateGatewayGroupOfficialModels(
 
 export function getSub2APISettings() {
   return request<{ settings: Sub2APISettings }>("/api/v1/admin/sub2api/settings");
+}
+
+export function getBackupConfig() {
+  return request<{ config: BackupRuntimeConfig }>("/api/v1/admin/backups/config");
+}
+
+export function getBackupS3Config() {
+  return request<{ config: BackupS3Config }>("/api/v1/admin/backups/s3-config");
+}
+
+export function updateBackupS3Config(input: BackupS3Config & AuditReasonInput) {
+  return request<{ config: BackupS3Config }>("/api/v1/admin/backups/s3-config", {
+    method: "PUT",
+    body: JSON.stringify(input)
+  });
+}
+
+export function testBackupS3Config(input: BackupS3Config) {
+  return request<BackupTestResult>("/api/v1/admin/backups/s3-config/test", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function getBackupSchedule() {
+  return request<{ schedule: BackupScheduleConfig }>("/api/v1/admin/backups/schedule");
+}
+
+export function updateBackupSchedule(input: BackupScheduleConfig & AuditReasonInput) {
+  return request<{ schedule: BackupScheduleConfig }>("/api/v1/admin/backups/schedule", {
+    method: "PUT",
+    body: JSON.stringify(input)
+  });
+}
+
+export function createBackup(input: { expireDays?: number; auditReason?: string } = {}) {
+  return request<{ backup: BackupRecord }>("/api/v1/admin/backups", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export function listBackups(limit = 100) {
+  return request<PagedItems<BackupRecord>>(`/api/v1/admin/backups?limit=${limit}`);
+}
+
+export function deleteBackup(id: string, input: AuditReasonInput = {}) {
+  return request<{ status: string }>(`/api/v1/admin/backups/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    body: JSON.stringify(input)
+  });
+}
+
+export function restoreBackup(id: string, input: { password: string; confirmation: string } & AuditReasonInput) {
+  return request<{ backup: BackupRecord }>(`/api/v1/admin/backups/${encodeURIComponent(id)}/restore`, {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
+}
+
+export async function downloadBackup(id: string, fileName?: string): Promise<void> {
+  const localUrl = `/api/v1/admin/backups/${encodeURIComponent(id)}/download`;
+  const response = await fetch(localUrl, { credentials: "include" });
+  if (!response.ok) {
+    const urlResult = await request<{ url: string }>(`/api/v1/admin/backups/${encodeURIComponent(id)}/download-url`);
+    window.open(urlResult.url, "_blank", "noopener,noreferrer");
+    return;
+  }
+  const blob = await response.blob();
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const match = /filename="?([^";]+)"?/i.exec(disposition);
+  const downloadName = match?.[1] || fileName || `brevyn-cloud-${id}.dump`;
+  const blobUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = blobUrl;
+  link.download = downloadName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(blobUrl);
 }
 
 export function getOfficialCapabilities() {

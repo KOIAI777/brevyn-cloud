@@ -16,7 +16,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const currentSchemaVersion = "20260606_official_capability_registry"
+const currentSchemaVersion = "20260606_cloud_backup_center"
 
 type schemaExecutor interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
@@ -115,6 +115,29 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 			value TEXT NOT NULL DEFAULT '',
 			sensitive BOOLEAN NOT NULL DEFAULT false,
 			updated_by_admin_id BIGINT REFERENCES admin_users(id) ON DELETE SET NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`CREATE TABLE IF NOT EXISTS backup_records (
+			id BIGSERIAL PRIMARY KEY,
+			public_id TEXT NOT NULL UNIQUE,
+			status TEXT NOT NULL DEFAULT 'pending',
+			progress TEXT NOT NULL DEFAULT '',
+			backup_type TEXT NOT NULL DEFAULT 'postgres',
+			storage_kind TEXT NOT NULL DEFAULT 'local',
+			file_name TEXT NOT NULL DEFAULT '',
+			file_path TEXT NOT NULL DEFAULT '',
+			s3_key TEXT NOT NULL DEFAULT '',
+			size_bytes BIGINT NOT NULL DEFAULT 0,
+			sha256 TEXT NOT NULL DEFAULT '',
+			triggered_by TEXT NOT NULL DEFAULT '',
+			error_message TEXT NOT NULL DEFAULT '',
+			started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			finished_at TIMESTAMPTZ,
+			expires_at TIMESTAMPTZ,
+			restore_status TEXT NOT NULL DEFAULT '',
+			restore_error TEXT NOT NULL DEFAULT '',
+			restored_at TIMESTAMPTZ,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
@@ -307,7 +330,7 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 		VALUES
 			('ocd_embedding', 'embedding', '向量检索', '课程资料语义检索、RAG 和知识库索引使用的文本向量能力。', 'custom-openai', 'openai_embedding', 'openai_compatible', '["embedding"]'::jsonb, '', true, 10),
 			('ocd_vision', 'vision', '视觉识别', '聊天、图片理解和轻量文档识别使用的视觉输入能力。', 'vision-custom-openai', 'openai_chat_completions', 'openai_compatible', '["vision_input"]'::jsonb, '', true, 20),
-			('ocd_ocr', 'ocr', '文档 OCR', '扫描 PDF、课件图片页和低文本覆盖页面进入索引前的 OCR 补充能力。', 'ocr-custom-openai', 'openai_chat_completions', 'openai_compatible', '["vision_input", "ocr"]'::jsonb, '0.2.8', false, 30)
+			('ocd_ocr', 'ocr', '文档 OCR', '扫描 PDF、课件图片页和低文本覆盖页面进入索引前的 OCR 补充能力。', 'ocr-custom-openai', 'openai_chat_completions', 'openai_compatible', '["vision_input", "ocr"]'::jsonb, '0.2.8', true, 30)
 		ON CONFLICT (capability_key) DO NOTHING`,
 		`ALTER TABLE gateway_channels ADD COLUMN IF NOT EXISTS group_ids JSONB NOT NULL DEFAULT '[]'::jsonb`,
 		`ALTER TABLE gateway_channels ADD COLUMN IF NOT EXISTS model_pricing JSONB NOT NULL DEFAULT '[]'::jsonb`,
@@ -526,6 +549,9 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_family_id ON refresh_tokens(family_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_active_expiry ON refresh_tokens(expires_at) WHERE status = 'active'`,
+		`CREATE INDEX IF NOT EXISTS idx_backup_records_created_at ON backup_records(created_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_backup_records_status ON backup_records(status)`,
+		`CREATE INDEX IF NOT EXISTS idx_backup_records_expires_at ON backup_records(expires_at) WHERE expires_at IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_gateway_accounts_user_id ON gateway_accounts(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_gateway_api_keys_user_id ON gateway_api_keys(user_id)`,

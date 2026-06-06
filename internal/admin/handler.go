@@ -43,6 +43,7 @@ type Handler struct {
 	operations    *GatewayOperationService
 	diagnostics   *DiagnosticsService
 	gateway       *GatewaySettingsService
+	backups       *BackupService
 	subscriptions *SubscriptionService
 	keys          *GatewayKeyService
 	sessions      *sessionManager
@@ -56,10 +57,34 @@ type AdminPrincipal struct {
 	Role     string `json:"role"`
 }
 
+type HandlerOption func(*handlerOptions)
+
+type handlerOptions struct {
+	enableBackups bool
+}
+
+func WithBackupService() HandlerOption {
+	return func(opts *handlerOptions) {
+		opts.enableBackups = true
+	}
+}
+
 func NewHandler(cfg *config.Config, postgres *pgxpool.Pool, redisClients ...*redis.Client) *Handler {
+	return newHandler(cfg, postgres, nil, redisClients...)
+}
+
+func NewHandlerWithOptions(cfg *config.Config, postgres *pgxpool.Pool, redisClient *redis.Client, opts ...HandlerOption) *Handler {
+	return newHandler(cfg, postgres, opts, redisClient)
+}
+
+func newHandler(cfg *config.Config, postgres *pgxpool.Pool, opts []HandlerOption, redisClients ...*redis.Client) *Handler {
 	secret := cfg.SessionSecret
 	if strings.TrimSpace(secret) == "" {
 		secret = cfg.JWTAccessSecret
+	}
+	options := handlerOptions{}
+	for _, opt := range opts {
+		opt(&options)
 	}
 	var redisClient *redis.Client
 	if len(redisClients) > 0 {
@@ -91,8 +116,23 @@ func NewHandler(cfg *config.Config, postgres *pgxpool.Pool, redisClients ...*red
 			secure: cfg.Env == "production",
 		},
 	}
+	if options.enableBackups {
+		handler.backups = NewBackupService(cfg, postgres, gateway)
+	}
 	handler.keys = NewGatewayKeyService(postgres, handler.gateway, handler.redeem)
 	return handler
+}
+
+func (h *Handler) StartBackgroundServices() {
+	if h.backups != nil {
+		h.backups.Start()
+	}
+}
+
+func (h *Handler) StopBackgroundServices() {
+	if h.backups != nil {
+		h.backups.Stop()
+	}
 }
 
 func (h *Handler) Health(c *gin.Context) {

@@ -14,11 +14,14 @@ type Config struct {
 	Port            string
 	ShutdownTimeout time.Duration
 
-	DatabaseURL      string
-	RedisURL         string
-	PostgresMaxConns int
-	PostgresMinConns int
-	MigrateOnStartup bool
+	DatabaseURL         string
+	RedisURL            string
+	PostgresMaxConns    int
+	PostgresMinConns    int
+	MigrateOnStartup    bool
+	BackupDir           string
+	BackupRetentionDays int
+	AllowAdminDBRestore bool
 
 	AppBaseURL        string
 	AdminBaseURL      string
@@ -59,6 +62,9 @@ func Load() (*Config, error) {
 		PostgresMaxConns:             getInt("POSTGRES_MAX_CONNS", 30),
 		PostgresMinConns:             getInt("POSTGRES_MIN_CONNS", 2),
 		MigrateOnStartup:             getBool("MIGRATE_ON_STARTUP", env != "production"),
+		BackupDir:                    getenv("BACKUP_DIR", "./backups/postgres"),
+		BackupRetentionDays:          getInt("BACKUP_RETENTION_DAYS", 14),
+		AllowAdminDBRestore:          getBool("ALLOW_ADMIN_DB_RESTORE", false),
 		AppBaseURL:                   getenv("APP_BASE_URL", "http://127.0.0.1:4000"),
 		AdminBaseURL:                 getenv("ADMIN_BASE_URL", "http://127.0.0.1:4000/admin"),
 		AllowedOrigins:               getCSV("CORS_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"),

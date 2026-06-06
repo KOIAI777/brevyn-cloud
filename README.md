@@ -121,10 +121,19 @@ By default, backups are written to `./backups/postgres` and files older than 14
 days are pruned. Override with `BACKUP_DIR` and `BACKUP_RETENTION_DAYS` when
 needed.
 
+The admin Settings page also includes a Cloud Backup Center. In Docker Compose,
+the API container writes local backups to `/app/backups/postgres`, mounted from
+`./backups`, and can optionally upload a second copy to S3-compatible storage
+such as Cloudflare R2.
+
 Restores are destructive and require an explicit confirmation flag:
 
 ```bash
 ALLOW_RESTORE=1 BACKUP_FILE=./backups/postgres/brevyn-cloud-YYYYMMDDTHHMMSSZ.dump make db-restore
 ```
+
+Admin-triggered restores are disabled by default. Set
+`ALLOW_ADMIN_DB_RESTORE=true` only when you intentionally want to allow
+password-confirmed restores from the admin page.
 
 For production, copy backups to off-machine storage and test a restore regularly.
