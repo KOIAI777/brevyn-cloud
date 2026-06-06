@@ -221,10 +221,13 @@ function mappingCount(channel: GatewayChannel) {
   return Object.values(channel.modelMapping ?? {}).reduce((total, mapping) => total + Object.keys(mapping ?? {}).length, 0);
 }
 
+type GatewaySection = "overview" | "groups";
+
 export function GatewayPage() {
   const groups = useQuery({ queryKey: ["admin-gateway-groups"], queryFn: getGatewayGroups });
   const products = useQuery({ queryKey: ["admin-products"], queryFn: getProducts });
   const sub2apiSettings = useQuery({ queryKey: ["admin-sub2api-settings"], queryFn: getSub2APISettings });
+  const [activeSection, setActiveSection] = useState<GatewaySection>("overview");
   const groupRows = groups.data?.items ?? [];
   const productRows = products.data?.items ?? [];
   const settings = sub2apiSettings.data?.settings;
@@ -260,72 +263,94 @@ export function GatewayPage() {
   return (
     <div className="page-stack">
       <PageHeader eyebrow="Gateway" title="网关" description="Sub2API 语义映射：分组、商品权益、影子账号和设备 Key。" />
-      <StatGrid
-        stats={[
-          { label: "Gateway Groups", value: String(activeGroups.length), delta: "已同步 active groups", tone: "green", icon: Server },
-          { label: "Products", value: String(productRows.length), delta: "balance / subscription", tone: "amber", icon: KeyRound },
-          { label: "Auth Mode", value: authModeLabel(settings?.authMode ?? "not_configured"), delta: "Sub2API admin", tone: "cyan", icon: Network }
-        ]}
-      />
 
-      <section className="panel">
-        <div className="panel-heading">
-          <h3>Sub2API</h3>
-          <StatusBadge tone={settings?.authMode && settings.authMode !== "not_configured" ? "ok" : "warn"}>
-            {settings?.authMode && settings.authMode !== "not_configured" ? "configured" : "not configured"}
-          </StatusBadge>
-        </div>
-        <dl className="kv-list">
-          <dt>Sub2API base URL</dt>
-          <dd>{settings?.baseUrl ?? "未配置"}</dd>
-          <dt>Admin auth</dt>
-          <dd>{authModeLabel(settings?.authMode ?? "not_configured")}</dd>
-          <dt>Default group</dt>
-          <dd>{settings?.defaultGroupId ? `#${settings.defaultGroupId}` : "自动选择 active 分组"}</dd>
-          <dt>Synced groups</dt>
-          <dd>{groups.isLoading ? "加载中" : `${activeGroups.length} active / ${groupRows.length} total`}</dd>
-          <dt>Group semantics</dt>
-          <dd>standard = API Key 默认分组，按用户余额扣费；subscription = 用户订阅分组，按日/周/月 USD 限额控制</dd>
-          <dt>Redeem semantics</dt>
-          <dd>balance 增加钱包余额；subscription 分配或续期指定 subscription 分组</dd>
-        </dl>
-      </section>
+      <div className="settings-layout">
+        <aside className="settings-sidebar" aria-label="网关导航">
+          <button className={activeSection === "overview" ? "active" : ""} onClick={() => setActiveSection("overview")} type="button">
+            <Network size={16} />
+            <span>概览</span>
+          </button>
+          <button className={activeSection === "groups" ? "active" : ""} onClick={() => setActiveSection("groups")} type="button">
+            <Boxes size={16} />
+            <span>分组</span>
+          </button>
+        </aside>
 
-      <section className="panel">
-        <div className="panel-heading">
-          <div>
-            <h3>分组</h3>
-            <p className="panel-subtitle">折叠查看每个 Sub2API 分组；展开后再处理官方能力模型、账号、渠道和定价。</p>
-          </div>
-          <div className="gateway-panel-actions">
-            <StatusBadge tone="neutral">{String(groups.data?.total ?? 0)}</StatusBadge>
-            <button className="secondary-action compact" type="button" onClick={expandAllGroups} disabled={groupRows.length === 0}>
-              全部展开
-            </button>
-            <button className="secondary-action compact" type="button" onClick={collapseAllGroups} disabled={openGroupIds.size === 0}>
-              全部收起
-            </button>
-          </div>
-        </div>
-        <div className="gateway-group-list">
-          <div className="gateway-model-section-heading">
-            <div>
-              <h4>分组总览</h4>
-              <p>标题行只放关键状态，问题组会优先默认展开。</p>
-            </div>
-            <Boxes size={18} aria-hidden="true" />
-          </div>
-          {groupRows.map((group) => (
-            <GatewayGroupCard
-              group={group}
-              isOpen={openGroupIds.has(group.id)}
-              key={group.id}
-              onToggle={() => toggleGroup(group.id)}
-            />
-          ))}
-          {!groups.isLoading && groupRows.length === 0 ? <p className="gateway-model-empty">暂无网关分组。</p> : null}
-        </div>
-      </section>
+        <main className="settings-content-pane">
+          {activeSection === "overview" ? (
+            <>
+              <StatGrid
+                stats={[
+                  { label: "Gateway Groups", value: String(activeGroups.length), delta: "已同步 active groups", tone: "green", icon: Server },
+                  { label: "Products", value: String(productRows.length), delta: "balance / subscription", tone: "amber", icon: KeyRound },
+                  { label: "Auth Mode", value: authModeLabel(settings?.authMode ?? "not_configured"), delta: "Sub2API admin", tone: "cyan", icon: Network }
+                ]}
+              />
+
+              <section className="panel">
+                <div className="panel-heading">
+                  <h3>Sub2API</h3>
+                  <StatusBadge tone={settings?.authMode && settings.authMode !== "not_configured" ? "ok" : "warn"}>
+                    {settings?.authMode && settings.authMode !== "not_configured" ? "configured" : "not configured"}
+                  </StatusBadge>
+                </div>
+                <dl className="kv-list">
+                  <dt>Sub2API base URL</dt>
+                  <dd>{settings?.baseUrl ?? "未配置"}</dd>
+                  <dt>Admin auth</dt>
+                  <dd>{authModeLabel(settings?.authMode ?? "not_configured")}</dd>
+                  <dt>Default group</dt>
+                  <dd>{settings?.defaultGroupId ? `#${settings.defaultGroupId}` : "自动选择 active 分组"}</dd>
+                  <dt>Synced groups</dt>
+                  <dd>{groups.isLoading ? "加载中" : `${activeGroups.length} active / ${groupRows.length} total`}</dd>
+                  <dt>Group semantics</dt>
+                  <dd>standard = API Key 默认分组，按用户余额扣费；subscription = 用户订阅分组，按日/周/月 USD 限额控制</dd>
+                  <dt>Redeem semantics</dt>
+                  <dd>balance 增加钱包余额；subscription 分配或续期指定 subscription 分组</dd>
+                </dl>
+              </section>
+            </>
+          ) : null}
+
+          {activeSection === "groups" ? (
+            <section className="panel">
+              <div className="panel-heading">
+                <div>
+                  <h3>分组</h3>
+                  <p className="panel-subtitle">折叠查看每个 Sub2API 分组；展开后再处理官方能力模型、账号、渠道和定价。</p>
+                </div>
+                <div className="gateway-panel-actions">
+                  <StatusBadge tone="neutral">{String(groups.data?.total ?? 0)}</StatusBadge>
+                  <button className="secondary-action compact" type="button" onClick={expandAllGroups} disabled={groupRows.length === 0}>
+                    全部展开
+                  </button>
+                  <button className="secondary-action compact" type="button" onClick={collapseAllGroups} disabled={openGroupIds.size === 0}>
+                    全部收起
+                  </button>
+                </div>
+              </div>
+              <div className="gateway-group-list">
+                <div className="gateway-model-section-heading">
+                  <div>
+                    <h4>分组总览</h4>
+                    <p>标题行只放关键状态，问题组会优先默认展开。</p>
+                  </div>
+                  <Boxes size={18} aria-hidden="true" />
+                </div>
+                {groupRows.map((group) => (
+                  <GatewayGroupCard
+                    group={group}
+                    isOpen={openGroupIds.has(group.id)}
+                    key={group.id}
+                    onToggle={() => toggleGroup(group.id)}
+                  />
+                ))}
+                {!groups.isLoading && groupRows.length === 0 ? <p className="gateway-model-empty">暂无网关分组。</p> : null}
+              </div>
+            </section>
+          ) : null}
+        </main>
+      </div>
     </div>
   );
 }
