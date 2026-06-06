@@ -18,6 +18,7 @@ type Config struct {
 	RedisURL         string
 	PostgresMaxConns int
 	PostgresMinConns int
+	MigrateOnStartup bool
 
 	AppBaseURL        string
 	AdminBaseURL      string
@@ -48,14 +49,16 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
+	env := getenv("APP_ENV", "development")
 	cfg := &Config{
-		Env:                          getenv("APP_ENV", "development"),
+		Env:                          env,
 		Port:                         getenv("PORT", "4000"),
 		ShutdownTimeout:              getDuration("SHUTDOWN_TIMEOUT", 10*time.Second),
 		DatabaseURL:                  getenv("DATABASE_URL", "postgres://brevyn:brevyn@127.0.0.1:5432/brevyn_cloud?sslmode=disable"),
 		RedisURL:                     getenv("REDIS_URL", "redis://127.0.0.1:6379/0"),
 		PostgresMaxConns:             getInt("POSTGRES_MAX_CONNS", 30),
 		PostgresMinConns:             getInt("POSTGRES_MIN_CONNS", 2),
+		MigrateOnStartup:             getBool("MIGRATE_ON_STARTUP", env != "production"),
 		AppBaseURL:                   getenv("APP_BASE_URL", "http://127.0.0.1:4000"),
 		AdminBaseURL:                 getenv("ADMIN_BASE_URL", "http://127.0.0.1:4000/admin"),
 		AllowedOrigins:               getCSV("CORS_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"),
@@ -111,6 +114,9 @@ func (c *Config) validateDeploymentSafety() error {
 }
 
 func (c *Config) validateProduction() error {
+	if c.MigrateOnStartup {
+		return fmt.Errorf("MIGRATE_ON_STARTUP must be false in production; run brevyn-migrate before starting api and worker")
+	}
 	required := map[string]string{
 		"ENCRYPTION_KEY":      c.EncryptionKey,
 		"SESSION_SECRET":      c.SessionSecret,
@@ -250,6 +256,21 @@ func getInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func getBool(key string, fallback bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if value == "" {
+		return fallback
+	}
+	switch value {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
 }
 
 func getDuration(key string, fallback time.Duration) time.Duration {

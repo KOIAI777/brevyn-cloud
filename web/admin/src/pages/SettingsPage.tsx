@@ -1,6 +1,6 @@
-import { LockKeyhole, QrCode, RefreshCw, Save, Server, ShieldCheck, Wifi } from "lucide-react";
+import { LockKeyhole, Plus, QrCode, RefreshCw, Save, Server, ShieldCheck, Trash2, Wifi } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DangerConfirmModal } from "../components/DangerConfirmModal";
 import { PageHeader } from "../components/PageHeader";
 import { StatusBadge } from "../components/StatusBadge";
@@ -9,13 +9,16 @@ import {
   enableAdminTOTP,
   getGatewayGroups,
   getAdminTOTPStatus,
+  getOfficialCapabilities,
   getSub2APISettings,
   setupAdminTOTP,
   syncSub2APIGroups,
   syncSub2APIModels,
   testSub2APIConnection,
+  updateOfficialCapabilities,
   updateSub2APISettings,
   type GatewayGroup,
+  type OfficialCapabilityDefinition,
   type Sub2APISettings,
   type Sub2APISettingsInput
 } from "../api/client";
@@ -333,6 +336,8 @@ function SettingsContent({ initialSettings }: { initialSettings: Sub2APISettings
         </div>
       </section>
 
+      <OfficialCapabilitiesPanel />
+
       <section className="split-grid">
         <div className="panel">
           <div className="panel-heading">
@@ -430,4 +435,212 @@ function SettingsContent({ initialSettings }: { initialSettings: Sub2APISettings
       />
     </div>
   );
+}
+
+function OfficialCapabilitiesPanel() {
+  const queryClient = useQueryClient();
+  const capabilities = useQuery({ queryKey: ["admin-official-capabilities"], queryFn: getOfficialCapabilities });
+  const [drafts, setDrafts] = useState<OfficialCapabilityDefinition[]>([]);
+  const [auditReason, setAuditReason] = useState("");
+  const [notice, setNotice] = useState("");
+  const sourceItems = useMemo(() => capabilities.data?.items ?? [], [capabilities.data?.items]);
+
+  useEffect(() => {
+    setDrafts(sourceItems.map(cloneCapabilityDefinition));
+    setAuditReason("");
+  }, [sourceItems]);
+
+  const saveCapabilities = useMutation({
+    mutationFn: () => updateOfficialCapabilities({ items: drafts.map(normalizeCapabilityDraft), auditReason }),
+    onSuccess: async (result) => {
+      setNotice(`已保存 ${result.total} 个官方能力`);
+      setAuditReason("");
+      await queryClient.invalidateQueries({ queryKey: ["admin-official-capabilities"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin-gateway-groups"] });
+    }
+  });
+
+  const dirty = JSON.stringify(drafts.map(normalizeCapabilityDraft)) !== JSON.stringify(sourceItems.map(normalizeCapabilityDraft));
+  const canSave = dirty && auditReason.trim().length > 0 && !saveCapabilities.isPending;
+
+  const updateDraft = (index: number, patch: Partial<OfficialCapabilityDefinition>) => {
+    setDrafts((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
+  };
+
+  const addDraft = () => {
+    setDrafts((current) => [
+      ...current,
+      {
+        id: "",
+        key: "",
+        name: "",
+        description: "",
+        providerKind: "custom-openai",
+        adapterKind: "openai_chat_completions",
+        protocol: "openai_compatible",
+        modelHintCapabilities: [],
+        minClientVersion: "",
+        enabled: true,
+        sortOrder: (current.length + 1) * 10
+      }
+    ]);
+  };
+
+  const removeDraft = (index: number) => {
+    setDrafts((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, enabled: false } : item));
+  };
+
+  return (
+    <section className="panel">
+      <div className="panel-heading">
+        <div>
+          <h3>官方能力注册</h3>
+          <p className="panel-subtitle">定义 Cloud 可以给客户端发放的能力；Gateway 分组页再为每个能力选择模型。</p>
+        </div>
+        <StatusBadge tone={capabilities.isError ? "danger" : "ok"}>{capabilities.isLoading ? "loading" : `${drafts.filter((item) => item.enabled).length} active`}</StatusBadge>
+      </div>
+      <div className="form-stack">
+        {drafts.map((item, index) => (
+          <div className="panel soft-panel" key={`${item.id || "new"}-${index}`}>
+            <div className="panel-heading compact">
+              <div>
+                <h4>{item.name || item.key || "新能力"}</h4>
+                <p className="panel-subtitle">{item.enabled ? "启用中" : "已停用；保存后客户端不会再收到这个能力。"}</p>
+              </div>
+              <label className="toggle-row">
+                <input checked={item.enabled} onChange={(event) => updateDraft(index, { enabled: event.target.checked })} type="checkbox" />
+                <span>{item.enabled ? "启用" : "停用"}</span>
+              </label>
+            </div>
+            <div className="form-grid settings-form-grid">
+              <label>
+                Key
+                <input
+                  onChange={(event) => updateDraft(index, { key: event.target.value })}
+                  placeholder="ocr"
+                  value={item.key}
+                />
+              </label>
+              <label>
+                名称
+                <input
+                  onChange={(event) => updateDraft(index, { name: event.target.value })}
+                  placeholder="文档 OCR"
+                  value={item.name}
+                />
+              </label>
+              <label>
+                Provider kind
+                <input
+                  onChange={(event) => updateDraft(index, { providerKind: event.target.value })}
+                  placeholder="ocr-custom-openai"
+                  value={item.providerKind}
+                />
+              </label>
+              <label>
+                Adapter kind
+                <input
+                  onChange={(event) => updateDraft(index, { adapterKind: event.target.value })}
+                  placeholder="openai_chat_completions"
+                  value={item.adapterKind}
+                />
+              </label>
+              <label>
+                Protocol
+                <input
+                  onChange={(event) => updateDraft(index, { protocol: event.target.value })}
+                  placeholder="openai_compatible"
+                  value={item.protocol}
+                />
+              </label>
+              <label>
+                最低客户端版本
+                <input
+                  onChange={(event) => updateDraft(index, { minClientVersion: event.target.value })}
+                  placeholder="0.2.8"
+                  value={item.minClientVersion}
+                />
+              </label>
+              <label className="wide-field">
+                模型提示标签
+                <input
+                  onChange={(event) => updateDraft(index, { modelHintCapabilities: splitCapabilityHints(event.target.value) })}
+                  placeholder="vision_input, ocr"
+                  value={item.modelHintCapabilities.join(", ")}
+                />
+              </label>
+              <label className="wide-field">
+                说明
+                <input
+                  onChange={(event) => updateDraft(index, { description: event.target.value })}
+                  placeholder="这个能力会在哪里使用"
+                  value={item.description}
+                />
+              </label>
+            </div>
+            <div className="button-row">
+              <button className="secondary-action" onClick={() => removeDraft(index)} type="button">
+                <Trash2 size={15} />
+                <span>停用</span>
+              </button>
+            </div>
+          </div>
+        ))}
+        {drafts.length === 0 ? <p className="inline-state">暂无能力定义，先添加 embedding / vision / ocr。</p> : null}
+      </div>
+      <div className="gateway-official-actions">
+        <button className="secondary-action" disabled={saveCapabilities.isPending} onClick={addDraft} type="button">
+          <Plus size={15} />
+          <span>新增能力</span>
+        </button>
+        <input
+          aria-label="官方能力变更原因"
+          onChange={(event) => setAuditReason(event.target.value)}
+          placeholder="变更原因"
+          value={auditReason}
+        />
+        <button className="secondary-action" disabled={!dirty || saveCapabilities.isPending} onClick={() => setDrafts(sourceItems.map(cloneCapabilityDefinition))} type="button">
+          重置
+        </button>
+        <button className="primary-action" disabled={!canSave} onClick={() => saveCapabilities.mutate()} type="button">
+          <Save size={15} />
+          <span>{saveCapabilities.isPending ? "保存中" : "保存能力"}</span>
+        </button>
+      </div>
+      {notice ? <p className="inline-notice">{notice}</p> : null}
+      {capabilities.isError || saveCapabilities.isError ? <p className="inline-error">{capabilities.error?.message || saveCapabilities.error?.message}</p> : null}
+    </section>
+  );
+}
+
+function cloneCapabilityDefinition(item: OfficialCapabilityDefinition): OfficialCapabilityDefinition {
+  return { ...item, modelHintCapabilities: [...(item.modelHintCapabilities ?? [])] };
+}
+
+function normalizeCapabilityDraft(item: OfficialCapabilityDefinition): OfficialCapabilityDefinition {
+  return {
+    ...item,
+    key: item.key.trim().toLowerCase(),
+    name: item.name.trim(),
+    description: item.description.trim(),
+    providerKind: item.providerKind.trim(),
+    adapterKind: item.adapterKind.trim(),
+    protocol: item.protocol.trim(),
+    modelHintCapabilities: splitCapabilityHints(item.modelHintCapabilities.join(",")),
+    minClientVersion: item.minClientVersion.trim(),
+    sortOrder: Number(item.sortOrder) || 0
+  };
+}
+
+function splitCapabilityHints(value: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of value.split(",")) {
+    const item = raw.trim();
+    const key = item.toLowerCase();
+    if (!item || seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
 }

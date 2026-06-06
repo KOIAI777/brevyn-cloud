@@ -70,10 +70,7 @@ func (s *GatewayGroupService) List(ctx context.Context) ([]GatewayGroupItem, err
 }
 
 func emptyGatewayGroupOfficialConfig() GatewayGroupOfficialConfig {
-	return GatewayGroupOfficialConfig{
-		Embedding: GatewayGroupOfficialPurposeConfig{ModelIDs: []string{}},
-		Vision:    GatewayGroupOfficialPurposeConfig{ModelIDs: []string{}},
-	}
+	return GatewayGroupOfficialConfig{}
 }
 
 func (s *GatewayGroupService) Create(ctx context.Context, req createGatewayGroupRequest) (GatewayGroupItem, error) {
@@ -425,6 +422,10 @@ func (s *GatewayGroupService) attachOfficialModelConfig(ctx context.Context, gro
 	if len(groups) == 0 {
 		return nil
 	}
+	purposes, err := s.activeOfficialCapabilityKeys(ctx)
+	if err != nil {
+		return err
+	}
 	type groupKey struct {
 		provider        string
 		externalGroupID int64
@@ -440,7 +441,7 @@ func (s *GatewayGroupService) attachOfficialModelConfig(ctx context.Context, gro
 		WHERE provider = 'sub2api' AND enabled = true
 			AND purpose = ANY($1::text[])
 		ORDER BY external_group_id ASC, purpose ASC, sort_order ASC, model_id ASC
-	`, []string{"embedding", "vision"})
+	`, purposes)
 	if err != nil {
 		return err
 	}
@@ -458,25 +459,21 @@ func (s *GatewayGroupService) attachOfficialModelConfig(ctx context.Context, gro
 		if !ok {
 			continue
 		}
-		switch purpose {
-		case "embedding":
-			groups[index].OfficialModelConfig.Embedding.ModelIDs = append(groups[index].OfficialModelConfig.Embedding.ModelIDs, modelID)
-			if isDefault {
-				groups[index].OfficialModelConfig.Embedding.DefaultModelID = modelID
-			}
-		case "vision":
-			groups[index].OfficialModelConfig.Vision.ModelIDs = append(groups[index].OfficialModelConfig.Vision.ModelIDs, modelID)
-			if isDefault {
-				groups[index].OfficialModelConfig.Vision.DefaultModelID = modelID
-			}
+		config := groups[index].OfficialModelConfig[purpose]
+		config.ModelIDs = append(config.ModelIDs, modelID)
+		if isDefault {
+			config.DefaultModelID = modelID
 		}
+		groups[index].OfficialModelConfig[purpose] = config
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
 	for index := range groups {
-		ensureOfficialPurposeDefault(&groups[index].OfficialModelConfig.Embedding)
-		ensureOfficialPurposeDefault(&groups[index].OfficialModelConfig.Vision)
+		for purpose, config := range groups[index].OfficialModelConfig {
+			ensureOfficialPurposeDefault(&config)
+			groups[index].OfficialModelConfig[purpose] = config
+		}
 	}
 	return nil
 }
@@ -485,9 +482,13 @@ func (s *GatewayGroupService) UpdateOfficialModelConfig(ctx context.Context, ext
 	if externalGroupID <= 0 {
 		return emptyGatewayGroupOfficialConfig(), fmt.Errorf("invalid_external_group_id")
 	}
-	config := GatewayGroupOfficialConfig{
-		Embedding: normalizeOfficialPurposeConfig(req.Embedding),
-		Vision:    normalizeOfficialPurposeConfig(req.Vision),
+	purposes, err := s.activeOfficialCapabilityKeys(ctx)
+	if err != nil {
+		return emptyGatewayGroupOfficialConfig(), err
+	}
+	config := GatewayGroupOfficialConfig{}
+	for _, purpose := range purposes {
+		config[purpose] = normalizeOfficialPurposeConfig(req.Capabilities[purpose])
 	}
 	if err := s.validateOfficialModelConfig(ctx, externalGroupID, config); err != nil {
 		return emptyGatewayGroupOfficialConfig(), err
@@ -500,7 +501,7 @@ func (s *GatewayGroupService) UpdateOfficialModelConfig(ctx context.Context, ext
 	if _, err := tx.Exec(ctx, `
 		DELETE FROM gateway_group_model_roles
 		WHERE provider = 'sub2api' AND external_group_id = $1 AND purpose = ANY($2::text[])
-	`, externalGroupID, []string{"embedding", "vision"}); err != nil {
+	`, externalGroupID, purposes); err != nil {
 		return emptyGatewayGroupOfficialConfig(), err
 	}
 	insertPurpose := func(purpose string, purposeConfig GatewayGroupOfficialPurposeConfig) error {
@@ -518,11 +519,10 @@ func (s *GatewayGroupService) UpdateOfficialModelConfig(ctx context.Context, ext
 		}
 		return nil
 	}
-	if err := insertPurpose("embedding", config.Embedding); err != nil {
-		return emptyGatewayGroupOfficialConfig(), err
-	}
-	if err := insertPurpose("vision", config.Vision); err != nil {
-		return emptyGatewayGroupOfficialConfig(), err
+	for _, purpose := range purposes {
+		if err := insertPurpose(purpose, config[purpose]); err != nil {
+			return emptyGatewayGroupOfficialConfig(), err
+		}
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE gateway_groups
@@ -627,10 +627,43 @@ func (s *GatewayGroupService) validateOfficialModelConfig(ctx context.Context, e
 		}
 		return nil
 	}
-	if err := validatePurpose(config.Embedding); err != nil {
-		return err
+	for _, purposeConfig := range config {
+		if err := validatePurpose(purposeConfig); err != nil {
+			return err
+		}
 	}
-	return validatePurpose(config.Vision)
+	return nil
+}
+
+func (s *GatewayGroupService) activeOfficialCapabilityKeys(ctx context.Context) ([]string, error) {
+	rows, err := s.postgres.Query(ctx, `
+		SELECT capability_key
+		FROM official_capability_definitions
+		WHERE enabled = true
+		ORDER BY sort_order ASC, capability_key ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	keys := []string{}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return nil, err
+		}
+		key = strings.TrimSpace(key)
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(keys) == 0 {
+		keys = []string{"embedding", "vision"}
+	}
+	return keys, nil
 }
 
 func isOfficialModelConfigValidationError(err error) bool {

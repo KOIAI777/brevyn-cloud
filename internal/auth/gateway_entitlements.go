@@ -22,14 +22,15 @@ const (
 )
 
 type gatewayEntitlementsResponse struct {
-	ExternalUserID     int64                          `json:"externalUserId"`
-	Wallet             gatewayEntitlementWallet       `json:"wallet"`
-	BalanceGroups      []balanceGroupEntitlement      `json:"balanceGroups"`
-	SubscriptionGroups []subscriptionGroupEntitlement `json:"subscriptionGroups"`
-	UpdatedAt          time.Time                      `json:"updatedAt"`
-	Stale              bool                           `json:"stale"`
-	RefreshLimited     bool                           `json:"refreshLimited,omitempty"`
-	NextRefreshAfter   int                            `json:"nextRefreshAfterSeconds,omitempty"`
+	ExternalUserID                int64                          `json:"externalUserId"`
+	Wallet                        gatewayEntitlementWallet       `json:"wallet"`
+	BalanceGroups                 []balanceGroupEntitlement      `json:"balanceGroups"`
+	SubscriptionGroups            []subscriptionGroupEntitlement `json:"subscriptionGroups"`
+	OfficialCapabilityDefinitions []officialCapabilityDefinition `json:"officialCapabilityDefinitions,omitempty"`
+	UpdatedAt                     time.Time                      `json:"updatedAt"`
+	Stale                         bool                           `json:"stale"`
+	RefreshLimited                bool                           `json:"refreshLimited,omitempty"`
+	NextRefreshAfter              int                            `json:"nextRefreshAfterSeconds,omitempty"`
 }
 
 type gatewayEntitlementWallet struct {
@@ -209,6 +210,11 @@ func (h *Handler) loadGatewayEntitlements(ctx context.Context, user Principal) (
 	groups = mergeSubscriptionGroups(groups, subscriptions, gateway.DefaultGroupID)
 	if err := h.attachOfficialModelConfigs(ctx, groups); err != nil {
 		return nil, fmt.Errorf("official model configs: %w", err)
+	}
+	if definitions, err := h.officialCapabilityDefinitions(ctx); err == nil {
+		resp.OfficialCapabilityDefinitions = definitions
+	} else {
+		return nil, fmt.Errorf("official capability definitions: %w", err)
 	}
 	subscriptionsByGroup := activeSubscriptionsByGroup(subscriptions)
 	slices.SortFunc(groups, func(a, b gatewayGroupSummary) int {

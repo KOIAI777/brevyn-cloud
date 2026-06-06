@@ -1,4 +1,4 @@
-.PHONY: tidy run test docker-up docker-up-local docker-down admin-install admin-dev admin-build admin-lint admin-docker
+.PHONY: tidy run test migrate db-backup db-restore docker-up docker-up-local docker-down admin-install admin-dev admin-build admin-lint admin-docker
 
 tidy:
 	go mod tidy
@@ -8,6 +8,15 @@ run:
 
 test:
 	go test ./cmd/... ./internal/... ./ent/schema
+
+migrate:
+	go run ./cmd/migrate
+
+db-backup:
+	./scripts/db_backup.sh
+
+db-restore:
+	./scripts/db_restore.sh
 
 docker-up:
 	docker compose up -d --build

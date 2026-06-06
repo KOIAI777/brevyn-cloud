@@ -130,9 +130,20 @@ export type GatewayGroupOfficialPurposeConfig = {
   defaultModelId: string;
 };
 
-export type GatewayGroupOfficialModelConfig = {
-  embedding: GatewayGroupOfficialPurposeConfig;
-  vision: GatewayGroupOfficialPurposeConfig;
+export type GatewayGroupOfficialModelConfig = Record<string, GatewayGroupOfficialPurposeConfig>;
+
+export type OfficialCapabilityDefinition = {
+  id: string;
+  key: string;
+  name: string;
+  description: string;
+  providerKind: string;
+  adapterKind: string;
+  protocol: string;
+  modelHintCapabilities: string[];
+  minClientVersion: string;
+  enabled: boolean;
+  sortOrder: number;
 };
 
 export type GatewayGroupModel = {
@@ -1091,7 +1102,7 @@ export function getGatewayGroups() {
 
 export function updateGatewayGroupOfficialModels(
   externalGroupId: number,
-  input: GatewayGroupOfficialModelConfig & AuditReasonInput
+  input: { capabilities: GatewayGroupOfficialModelConfig } & AuditReasonInput
 ) {
   return request<{ officialModelConfig: GatewayGroupOfficialModelConfig }>(
     `/api/v1/admin/gateway-groups/${encodeURIComponent(String(externalGroupId))}/official-models`,
@@ -1104,6 +1115,17 @@ export function updateGatewayGroupOfficialModels(
 
 export function getSub2APISettings() {
   return request<{ settings: Sub2APISettings }>("/api/v1/admin/sub2api/settings");
+}
+
+export function getOfficialCapabilities() {
+  return request<{ items: OfficialCapabilityDefinition[]; total: number }>("/api/v1/admin/official-capabilities");
+}
+
+export function updateOfficialCapabilities(input: { items: OfficialCapabilityDefinition[] } & AuditReasonInput) {
+  return request<{ items: OfficialCapabilityDefinition[]; total: number }>("/api/v1/admin/official-capabilities", {
+    method: "PUT",
+    body: JSON.stringify(input)
+  });
 }
 
 export function updateSub2APISettings(input: Sub2APISettingsInput) {

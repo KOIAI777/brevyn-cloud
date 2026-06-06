@@ -32,9 +32,9 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
-	if err := platform.EnsureSchema(ctx, postgres, cfg); err != nil {
+	if err := platform.PrepareSchema(ctx, postgres, cfg); err != nil {
 		postgres.Close()
-		return nil, fmt.Errorf("ensure schema: %w", err)
+		return nil, fmt.Errorf("prepare schema: %w", err)
 	}
 
 	redisClient, err := platform.ConnectRedis(ctx, cfg.RedisURL)

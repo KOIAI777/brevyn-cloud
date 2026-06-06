@@ -100,6 +100,8 @@ func NewRouter(cfg *config.Config, logger *slog.Logger, deps Dependencies) http.
 				protectedAdminRoutes.POST("/users/:id/grant-balance", deps.Admin.GrantUserBalance)
 				protectedAdminRoutes.GET("/sub2api/settings", deps.Admin.GetSub2APISettings)
 				protectedAdminRoutes.PUT("/sub2api/settings", deps.Admin.UpdateSub2APISettings)
+				protectedAdminRoutes.GET("/official-capabilities", deps.Admin.ListOfficialCapabilities)
+				protectedAdminRoutes.PUT("/official-capabilities", deps.Admin.UpdateOfficialCapabilities)
 				protectedAdminRoutes.POST("/sub2api/test", deps.Admin.TestSub2APIConnection)
 				protectedAdminRoutes.POST("/sub2api/sync-groups", deps.Admin.SyncSub2APIGroups)
 				protectedAdminRoutes.POST("/sub2api/sync-models", deps.Admin.SyncSub2APIModels)

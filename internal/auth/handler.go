@@ -678,9 +678,16 @@ type officialPurposeConfig struct {
 	DefaultModelID string   `json:"defaultModelId"`
 }
 
-type officialModelConfig struct {
-	Embedding officialPurposeConfig `json:"embedding"`
-	Vision    officialPurposeConfig `json:"vision"`
+type officialModelConfig map[string]officialPurposeConfig
+
+type officialCapabilityDefinition struct {
+	Key                   string   `json:"key"`
+	Name                  string   `json:"name"`
+	ProviderKind          string   `json:"providerKind"`
+	AdapterKind           string   `json:"adapterKind"`
+	Protocol              string   `json:"protocol"`
+	ModelHintCapabilities []string `json:"modelHintCapabilities"`
+	MinClientVersion      string   `json:"minClientVersion"`
 }
 
 func (h *Handler) officialPurposeProviders(ctx context.Context, externalGroupID int64, models []modelCatalogItem, apiKey string) ([]gin.H, error) {
@@ -691,14 +698,17 @@ func (h *Handler) officialPurposeProviders(ctx context.Context, externalGroupID 
 	if len(configs) == 0 {
 		return nil, nil
 	}
-	providers := []gin.H{}
-	if config, ok := configs["embedding"]; ok {
-		if provider := h.officialPurposeProvider("embedding", config, models, apiKey); provider != nil {
-			providers = append(providers, provider)
-		}
+	definitions, err := h.officialCapabilityDefinitions(ctx)
+	if err != nil {
+		return nil, err
 	}
-	if config, ok := configs["vision"]; ok {
-		if provider := h.officialPurposeProvider("vision", config, models, apiKey); provider != nil {
+	providers := []gin.H{}
+	for _, definition := range definitions {
+		config, ok := configs[definition.Key]
+		if !ok {
+			continue
+		}
+		if provider := h.officialPurposeProvider(definition, config, models, apiKey); provider != nil {
 			providers = append(providers, provider)
 		}
 	}
@@ -710,9 +720,10 @@ func (h *Handler) officialPurposeConfigs(ctx context.Context, externalGroupID in
 		SELECT purpose, model_id, is_default
 		FROM gateway_group_model_roles
 		WHERE provider = 'sub2api' AND external_group_id = $1
-			AND enabled = true AND purpose = ANY($2::text[])
+			AND enabled = true
+			AND purpose IN (SELECT capability_key FROM official_capability_definitions WHERE enabled = true)
 		ORDER BY purpose ASC, sort_order ASC, model_id ASC
-	`, externalGroupID, []string{"embedding", "vision"})
+	`, externalGroupID)
 	if err != nil {
 		return nil, err
 	}
@@ -742,44 +753,69 @@ func (h *Handler) officialPurposeConfigs(ctx context.Context, externalGroupID in
 	return configs, nil
 }
 
-func (h *Handler) officialPurposeProvider(purpose string, config officialPurposeConfig, allModels []modelCatalogItem, apiKey string) gin.H {
+func (h *Handler) officialPurposeProvider(definition officialCapabilityDefinition, config officialPurposeConfig, allModels []modelCatalogItem, apiKey string) gin.H {
 	models := configuredPurposeModels(config.ModelIDs, allModels)
 	if len(models) == 0 {
 		return nil
 	}
 	selectedModel := selectedConfiguredModel(config.DefaultModelID, modelIDsFromCatalog(models))
-	switch purpose {
-	case "embedding":
-		return gin.H{
-			"purpose":       "embedding",
-			"providerKind":  "custom-openai",
-			"adapterKind":   "openai_embedding",
-			"protocol":      "openai_compatible",
-			"name":          "Brevyn Official Embedding",
-			"baseUrl":       h.cfg.OfficialProviderBaseURL,
-			"authMode":      "bearer",
-			"apiKey":        apiKey,
-			"selectedModel": selectedModel,
-			"enabled":       true,
-			"models":        models,
-		}
-	case "vision":
-		return gin.H{
-			"purpose":       "vision",
-			"providerKind":  "vision-custom-openai",
-			"adapterKind":   "openai_chat_completions",
-			"protocol":      "openai_compatible",
-			"name":          "Brevyn Official Vision",
-			"baseUrl":       h.cfg.OfficialProviderBaseURL,
-			"authMode":      "bearer",
-			"apiKey":        apiKey,
-			"selectedModel": selectedModel,
-			"enabled":       true,
-			"models":        models,
-		}
-	default:
-		return nil
+	return gin.H{
+		"purpose":               definition.Key,
+		"providerKind":          definition.ProviderKind,
+		"adapterKind":           definition.AdapterKind,
+		"protocol":              definition.Protocol,
+		"name":                  "Brevyn Official " + definition.Name,
+		"baseUrl":               h.cfg.OfficialProviderBaseURL,
+		"authMode":              "bearer",
+		"apiKey":                apiKey,
+		"selectedModel":         selectedModel,
+		"enabled":               true,
+		"models":                models,
+		"minClientVersion":      definition.MinClientVersion,
+		"modelHintCapabilities": definition.ModelHintCapabilities,
 	}
+}
+
+func (h *Handler) officialCapabilityDefinitions(ctx context.Context) ([]officialCapabilityDefinition, error) {
+	rows, err := h.postgres.Query(ctx, `
+		SELECT capability_key, name, provider_kind, adapter_kind, protocol,
+			model_hint_capabilities, min_client_version
+		FROM official_capability_definitions
+		WHERE enabled = true
+		ORDER BY sort_order ASC, capability_key ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []officialCapabilityDefinition{}
+	for rows.Next() {
+		var item officialCapabilityDefinition
+		var hintsRaw []byte
+		if err := rows.Scan(
+			&item.Key,
+			&item.Name,
+			&item.ProviderKind,
+			&item.AdapterKind,
+			&item.Protocol,
+			&hintsRaw,
+			&item.MinClientVersion,
+		); err != nil {
+			return nil, err
+		}
+		item.ModelHintCapabilities = decodeAuthStringList(hintsRaw)
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		items = []officialCapabilityDefinition{
+			{Key: "embedding", Name: "Embedding", ProviderKind: "custom-openai", AdapterKind: "openai_embedding", Protocol: "openai_compatible"},
+			{Key: "vision", Name: "Vision", ProviderKind: "vision-custom-openai", AdapterKind: "openai_chat_completions", Protocol: "openai_compatible"},
+		}
+	}
+	return items, nil
 }
 
 func configuredPurposeModels(modelIDs []string, allModels []modelCatalogItem) []modelCatalogItem {
@@ -802,6 +838,31 @@ func modelIDsFromCatalog(models []modelCatalogItem) []string {
 		ids = append(ids, model.ID)
 	}
 	return ids
+}
+
+func decodeAuthStringList(raw []byte) []string {
+	values := []string{}
+	if len(raw) == 0 {
+		return values
+	}
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return []string{}
+	}
+	out := []string{}
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 func selectedConfiguredModel(selected string, modelIDs []string) string {
@@ -1059,9 +1120,9 @@ func (h *Handler) attachOfficialModelConfigs(ctx context.Context, groups []gatew
 		WHERE provider = 'sub2api'
 			AND external_group_id = ANY($1::bigint[])
 			AND enabled = true
-			AND purpose = ANY($2::text[])
+			AND purpose IN (SELECT capability_key FROM official_capability_definitions WHERE enabled = true)
 		ORDER BY external_group_id ASC, purpose ASC, sort_order ASC, model_id ASC
-	`, groupIDs, []string{"embedding", "vision"})
+	`, groupIDs)
 	if err != nil {
 		return err
 	}
@@ -1077,18 +1138,15 @@ func (h *Handler) attachOfficialModelConfigs(ctx context.Context, groups []gatew
 			return err
 		}
 		config := configs[externalGroupID]
-		switch purpose {
-		case "embedding":
-			config.Embedding.ModelIDs = append(config.Embedding.ModelIDs, modelID)
-			if isDefault {
-				config.Embedding.DefaultModelID = modelID
-			}
-		case "vision":
-			config.Vision.ModelIDs = append(config.Vision.ModelIDs, modelID)
-			if isDefault {
-				config.Vision.DefaultModelID = modelID
-			}
+		if config == nil {
+			config = officialModelConfig{}
 		}
+		purposeConfig := config[purpose]
+		purposeConfig.ModelIDs = append(purposeConfig.ModelIDs, modelID)
+		if isDefault {
+			purposeConfig.DefaultModelID = modelID
+		}
+		config[purpose] = purposeConfig
 		configs[externalGroupID] = config
 	}
 	if err := rows.Err(); err != nil {
@@ -1100,14 +1158,13 @@ func (h *Handler) attachOfficialModelConfigs(ctx context.Context, groups []gatew
 		if !ok {
 			continue
 		}
-		config.Embedding.DefaultModelID = selectedConfiguredModel(config.Embedding.DefaultModelID, config.Embedding.ModelIDs)
-		config.Vision.DefaultModelID = selectedConfiguredModel(config.Vision.DefaultModelID, config.Vision.ModelIDs)
 		capabilities := []string{}
-		if len(config.Embedding.ModelIDs) > 0 {
-			capabilities = append(capabilities, "embedding")
-		}
-		if len(config.Vision.ModelIDs) > 0 {
-			capabilities = append(capabilities, "vision")
+		for purpose, purposeConfig := range config {
+			purposeConfig.DefaultModelID = selectedConfiguredModel(purposeConfig.DefaultModelID, purposeConfig.ModelIDs)
+			config[purpose] = purposeConfig
+			if len(purposeConfig.ModelIDs) > 0 {
+				capabilities = append(capabilities, purpose)
+			}
 		}
 		if len(capabilities) == 0 {
 			continue

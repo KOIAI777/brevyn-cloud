@@ -83,10 +83,7 @@ type GatewayGroupModelItem struct {
 	ChannelName       string          `json:"channelName"`
 }
 
-type GatewayGroupOfficialConfig struct {
-	Embedding GatewayGroupOfficialPurposeConfig `json:"embedding"`
-	Vision    GatewayGroupOfficialPurposeConfig `json:"vision"`
-}
+type GatewayGroupOfficialConfig map[string]GatewayGroupOfficialPurposeConfig
 
 type GatewayGroupOfficialPurposeConfig struct {
 	ModelIDs       []string `json:"modelIds"`
@@ -238,10 +235,9 @@ type createGatewayGroupRequest struct {
 }
 
 type updateGatewayGroupOfficialModelsRequest struct {
-	Embedding GatewayGroupOfficialPurposeConfig `json:"embedding"`
-	Vision    GatewayGroupOfficialPurposeConfig `json:"vision"`
-	AuditReason string                           `json:"auditReason"`
-	Reason      string                           `json:"reason"`
+	Capabilities GatewayGroupOfficialConfig `json:"capabilities"`
+	AuditReason  string                     `json:"auditReason"`
+	Reason       string                     `json:"reason"`
 }
 
 type createProductRequest struct {
@@ -335,8 +331,7 @@ func (h *Handler) UpdateGatewayGroupOfficialModels(c *gin.Context) {
 	admin, _ := currentAdmin(c)
 	h.writeAuditLog(c.Request.Context(), "admin", admin.ID, "gateway_group.official_models.update", "gateway_group", strconv.FormatInt(externalGroupID, 10), c.ClientIP(), c.Request.UserAgent(), auditMetadataWithReason(auditReason, map[string]any{
 		"external_group_id": externalGroupID,
-		"embedding":         config.Embedding,
-		"vision":            config.Vision,
+		"capabilities":      config,
 	}))
 	c.JSON(http.StatusOK, gin.H{"officialModelConfig": config})
 }

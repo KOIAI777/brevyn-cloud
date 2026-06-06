@@ -61,6 +61,8 @@ open http://127.0.0.1:4000/admin
 
 Use the normal `docker compose up -d --build` path for production-like builds,
 because it verifies the full multi-stage image including the Node admin build.
+The compose stack runs a one-shot `migrate` service before the API and worker
+start.
 
 ## Production Notes
 
@@ -84,3 +86,45 @@ Keep the two Sub2API URLs separate:
 
 PostgreSQL and Redis are local infrastructure. The default compose file binds
 their host ports to `127.0.0.1` for debugging and should not be exposed publicly.
+
+### Database Migrations
+
+Development can still run schema preparation during API or worker startup. In
+production, keep `MIGRATE_ON_STARTUP` unset or false and run the migration
+command before starting the long-running services:
+
+```bash
+docker compose run --rm migrate
+docker compose up -d api worker
+```
+
+For host-based development:
+
+```bash
+make migrate
+```
+
+The API and worker validate the current schema version on production startup.
+If validation fails, run `brevyn-migrate` first instead of letting the services
+modify the database implicitly.
+
+### PostgreSQL Backup And Restore
+
+Create a backup before every production migration and keep an automated daily
+backup outside the Docker volume:
+
+```bash
+make db-backup
+```
+
+By default, backups are written to `./backups/postgres` and files older than 14
+days are pruned. Override with `BACKUP_DIR` and `BACKUP_RETENTION_DAYS` when
+needed.
+
+Restores are destructive and require an explicit confirmation flag:
+
+```bash
+ALLOW_RESTORE=1 BACKUP_FILE=./backups/postgres/brevyn-cloud-YYYYMMDDTHHMMSSZ.dump make db-restore
+```
+
+For production, copy backups to off-machine storage and test a restore regularly.

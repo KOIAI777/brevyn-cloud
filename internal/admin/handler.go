@@ -36,6 +36,7 @@ type Handler struct {
 	userDetails   *UserDetailService
 	catalog       *CatalogService
 	gatewayGroups *GatewayGroupService
+	capabilities  *OfficialCapabilityService
 	redeemQueries *RedeemQueryService
 	dashboard     *DashboardQueryService
 	auditQueries  *AuditQueryService
@@ -75,6 +76,7 @@ func NewHandler(cfg *config.Config, postgres *pgxpool.Pool, redisClients ...*red
 		userDetails:   NewUserDetailService(postgres),
 		catalog:       NewCatalogService(postgres),
 		gatewayGroups: NewGatewayGroupService(postgres),
+		capabilities:  NewOfficialCapabilityService(postgres),
 		redeemQueries: NewRedeemQueryService(postgres),
 		gateway:       gateway,
 		dashboard:     NewDashboardQueryService(postgres, gateway),

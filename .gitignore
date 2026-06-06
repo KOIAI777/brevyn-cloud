@@ -5,6 +5,7 @@
 bin/
 dist/
 tmp/
+backups/
 coverage.out
 web/admin/dist/
 web/admin/node_modules/

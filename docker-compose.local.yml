@@ -3,6 +3,10 @@ services:
     build:
       dockerfile: Dockerfile.local
 
+  migrate:
+    build:
+      dockerfile: Dockerfile.local
+
   worker:
     build:
       dockerfile: Dockerfile.local

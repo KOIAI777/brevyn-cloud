@@ -34,8 +34,8 @@ func main() {
 		os.Exit(1)
 	}
 	defer postgres.Close()
-	if err := platform.EnsureSchema(ctx, postgres, cfg); err != nil {
-		logger.Error("ensure schema", "error", err)
+	if err := platform.PrepareSchema(ctx, postgres, cfg); err != nil {
+		logger.Error("prepare schema", "error", err)
 		os.Exit(1)
 	}
 

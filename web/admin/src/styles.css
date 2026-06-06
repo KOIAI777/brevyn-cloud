@@ -511,6 +511,13 @@ a {
   min-width: 0;
 }
 
+.soft-panel {
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.64);
+  box-shadow: none;
+  padding: 14px;
+}
+
 .panel-heading {
   display: flex;
   align-items: center;
@@ -1562,6 +1569,19 @@ code {
 .form-stack {
   display: grid;
   gap: 16px;
+}
+
+.toggle-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.toggle-row input {
+  accent-color: var(--accent);
 }
 
 .form-stack label,

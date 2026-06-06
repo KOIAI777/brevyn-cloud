@@ -41,6 +41,28 @@ func TestLoadParsesTrustedProxies(t *testing.T) {
 	}
 }
 
+func TestProductionDefaultsDisableStartupMigrations(t *testing.T) {
+	setProductionEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.MigrateOnStartup {
+		t.Fatalf("expected production startup migrations to be disabled")
+	}
+}
+
+func TestLoadRejectsProductionStartupMigrations(t *testing.T) {
+	setProductionEnv(t)
+	t.Setenv("MIGRATE_ON_STARTUP", "true")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "MIGRATE_ON_STARTUP") {
+		t.Fatalf("expected production startup migration rejection, got %v", err)
+	}
+}
+
 func setProductionEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("APP_ENV", "production")

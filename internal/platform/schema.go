@@ -6,25 +6,98 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/brevyn/brevyn-cloud/internal/config"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
 )
 
+const currentSchemaVersion = "20260606_official_capability_registry"
+
+type schemaExecutor interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func CurrentSchemaVersion() string {
+	return currentSchemaVersion
+}
+
+func PrepareSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) error {
+	if cfg.MigrateOnStartup {
+		return EnsureSchema(ctx, pool, cfg)
+	}
+	return VerifySchema(ctx, pool)
+}
+
+func VerifySchema(ctx context.Context, pool *pgxpool.Pool) error {
+	var hasMigrationTable bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM information_schema.tables
+			WHERE table_schema = 'public' AND table_name = 'schema_migrations'
+		)
+	`).Scan(&hasMigrationTable); err != nil {
+		return fmt.Errorf("check schema migrations table: %w", err)
+	}
+	if !hasMigrationTable {
+		return fmt.Errorf("database schema is not migrated; run brevyn-migrate before starting api and worker")
+	}
+
+	var hasCurrentVersion bool
+	if err := pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM schema_migrations WHERE version = $1
+		)
+	`, currentSchemaVersion).Scan(&hasCurrentVersion); err != nil {
+		return fmt.Errorf("check schema version: %w", err)
+	}
+	if !hasCurrentVersion {
+		return fmt.Errorf("database schema version %s is not applied; run brevyn-migrate", currentSchemaVersion)
+	}
+	return nil
+}
+
 func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) error {
 	const schemaLockID int64 = 91940001
-	if _, err := pool.Exec(ctx, `SELECT pg_advisory_lock($1)`, schemaLockID); err != nil {
+
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire schema connection: %w", err)
+	}
+	defer conn.Release()
+
+	lockCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if _, err := conn.Exec(lockCtx, `SELECT pg_advisory_lock($1)`, schemaLockID); err != nil {
 		return fmt.Errorf("acquire schema lock: %w", err)
 	}
 	defer func() {
-		_, _ = pool.Exec(context.Background(), `SELECT pg_advisory_unlock($1)`, schemaLockID)
+		_, _ = conn.Exec(context.Background(), `RESET lock_timeout`)
+		_, _ = conn.Exec(context.Background(), `RESET statement_timeout`)
+		var released bool
+		_ = conn.QueryRow(context.Background(), `SELECT pg_advisory_unlock($1)`, schemaLockID).Scan(&released)
 	}()
 
+	if _, err := conn.Exec(ctx, `SET lock_timeout = '15s'`); err != nil {
+		return fmt.Errorf("set schema lock timeout: %w", err)
+	}
+	if _, err := conn.Exec(ctx, `SET statement_timeout = '5min'`); err != nil {
+		return fmt.Errorf("set schema statement timeout: %w", err)
+	}
+
 	statements := []string{
+		`CREATE TABLE IF NOT EXISTS schema_migrations (
+				version TEXT PRIMARY KEY,
+				applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+			)`,
 		`CREATE TABLE IF NOT EXISTS admin_users (
-			id BIGSERIAL PRIMARY KEY,
+				id BIGSERIAL PRIMARY KEY,
 			public_id TEXT NOT NULL UNIQUE,
 			email TEXT NOT NULL UNIQUE,
 			password_hash TEXT NOT NULL,
@@ -210,6 +283,32 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			UNIQUE(provider, external_channel_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS official_capability_definitions (
+			id BIGSERIAL PRIMARY KEY,
+			public_id TEXT NOT NULL UNIQUE,
+			capability_key TEXT NOT NULL UNIQUE,
+			name TEXT NOT NULL,
+			description TEXT NOT NULL DEFAULT '',
+			provider_kind TEXT NOT NULL,
+			adapter_kind TEXT NOT NULL,
+			protocol TEXT NOT NULL,
+			model_hint_capabilities JSONB NOT NULL DEFAULT '[]'::jsonb,
+			min_client_version TEXT NOT NULL DEFAULT '',
+			enabled BOOLEAN NOT NULL DEFAULT true,
+			sort_order INT NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`INSERT INTO official_capability_definitions (
+			public_id, capability_key, name, description, provider_kind,
+			adapter_kind, protocol, model_hint_capabilities,
+			min_client_version, enabled, sort_order
+		)
+		VALUES
+			('ocd_embedding', 'embedding', '向量检索', '课程资料语义检索、RAG 和知识库索引使用的文本向量能力。', 'custom-openai', 'openai_embedding', 'openai_compatible', '["embedding"]'::jsonb, '', true, 10),
+			('ocd_vision', 'vision', '视觉识别', '聊天、图片理解和轻量文档识别使用的视觉输入能力。', 'vision-custom-openai', 'openai_chat_completions', 'openai_compatible', '["vision_input"]'::jsonb, '', true, 20),
+			('ocd_ocr', 'ocr', '文档 OCR', '扫描 PDF、课件图片页和低文本覆盖页面进入索引前的 OCR 补充能力。', 'ocr-custom-openai', 'openai_chat_completions', 'openai_compatible', '["vision_input", "ocr"]'::jsonb, '0.2.8', false, 30)
+		ON CONFLICT (capability_key) DO NOTHING`,
 		`ALTER TABLE gateway_channels ADD COLUMN IF NOT EXISTS group_ids JSONB NOT NULL DEFAULT '[]'::jsonb`,
 		`ALTER TABLE gateway_channels ADD COLUMN IF NOT EXISTS model_pricing JSONB NOT NULL DEFAULT '[]'::jsonb`,
 		`ALTER TABLE gateway_channels ADD COLUMN IF NOT EXISTS pricing_count INT NOT NULL DEFAULT 0`,
@@ -495,24 +594,31 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 	}
 
 	for _, statement := range statements {
-		if _, err := pool.Exec(ctx, statement); err != nil {
+		if _, err := conn.Exec(ctx, statement); err != nil {
 			return fmt.Errorf("apply schema statement: %w", err)
 		}
 	}
 
-	if err := seedAdmin(ctx, pool, cfg); err != nil {
+	if err := seedAdmin(ctx, conn, cfg); err != nil {
 		return err
 	}
-	if err := seedCatalog(ctx, pool, cfg); err != nil {
+	if err := seedCatalog(ctx, conn, cfg); err != nil {
 		return err
 	}
-	if err := seedModelCatalog(ctx, pool); err != nil {
+	if err := seedModelCatalog(ctx, conn); err != nil {
 		return err
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO schema_migrations (version, applied_at)
+		VALUES ($1, now())
+		ON CONFLICT (version) DO NOTHING
+	`, currentSchemaVersion); err != nil {
+		return fmt.Errorf("record schema migration: %w", err)
 	}
 	return nil
 }
 
-func seedCatalog(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) error {
+func seedCatalog(ctx context.Context, pool schemaExecutor, cfg *config.Config) error {
 	if cfg.Sub2APIDefaultGroupID > 0 {
 		_, err := pool.Exec(ctx, `
 			INSERT INTO gateway_groups (
@@ -540,7 +646,7 @@ func seedCatalog(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) er
 	return nil
 }
 
-func seedModelCatalog(ctx context.Context, pool *pgxpool.Pool) error {
+func seedModelCatalog(ctx context.Context, pool schemaExecutor) error {
 	models := []struct {
 		id                string
 		displayName       string
@@ -600,7 +706,7 @@ func seedModelCatalog(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
-func seedAdmin(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) error {
+func seedAdmin(ctx context.Context, pool schemaExecutor, cfg *config.Config) error {
 	var count int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM admin_users`).Scan(&count); err != nil {
 		return fmt.Errorf("count admin users: %w", err)

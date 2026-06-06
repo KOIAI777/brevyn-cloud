@@ -102,6 +102,47 @@ func (h *Handler) UpdateSub2APISettings(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"settings": h.gateway.SettingsResponse(settings, h.defaultExternalGroupID(ctx))})
 }
 
+func (h *Handler) ListOfficialCapabilities(c *gin.Context) {
+	items, err := h.capabilities.List(c.Request.Context(), true)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "official_capabilities_load_failed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items, "total": len(items)})
+}
+
+func (h *Handler) UpdateOfficialCapabilities(c *gin.Context) {
+	var req struct {
+		Items       []OfficialCapabilityDefinitionInput `json:"items"`
+		AuditReason string                              `json:"auditReason"`
+		Reason      string                              `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		return
+	}
+	auditReason, ok := requireAuditReason(c, req.AuditReason, req.Reason)
+	if !ok {
+		return
+	}
+	items, err := h.capabilities.Replace(c.Request.Context(), req.Items)
+	if err != nil {
+		status := http.StatusInternalServerError
+		errorCode := "official_capabilities_update_failed"
+		if isOfficialCapabilityValidationError(err) {
+			status = http.StatusBadRequest
+			errorCode = err.Error()
+		}
+		c.JSON(status, gin.H{"error": errorCode})
+		return
+	}
+	admin, _ := currentAdmin(c)
+	h.writeAuditLog(c.Request.Context(), "admin", admin.ID, "official_capabilities.update", "official_capability_definitions", "registry", c.ClientIP(), c.Request.UserAgent(), auditMetadataWithReason(auditReason, map[string]any{
+		"count": len(items),
+	}))
+	c.JSON(http.StatusOK, gin.H{"items": items, "total": len(items)})
+}
+
 func (h *Handler) TestSub2APIConnection(c *gin.Context) {
 	c.JSON(http.StatusOK, h.gateway.TestConnection(c.Request.Context()))
 }
@@ -216,6 +257,15 @@ func gatewaySettingsErrorCode(err error) string {
 		return "gateway_settings_failed"
 	}
 	return message
+}
+
+func isOfficialCapabilityValidationError(err error) bool {
+	switch err.Error() {
+	case "invalid_capability_key", "capability_name_required", "capability_adapter_required", "duplicate_capability_key":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeSub2APIGroup(group sub2api.AdminGroup) sub2api.AdminGroup {

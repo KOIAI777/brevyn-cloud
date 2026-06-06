@@ -9,6 +9,7 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/brevyn-api ./cmd/api
 RUN CGO_ENABLED=0 GOOS=linux go build -o /out/brevyn-worker ./cmd/worker
+RUN CGO_ENABLED=0 GOOS=linux go build -o /out/brevyn-migrate ./cmd/migrate
 
 FROM node:22-alpine AS admin-web-build
 
@@ -28,6 +29,7 @@ RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=build /out/brevyn-api /usr/local/bin/brevyn-api
 COPY --from=build /out/brevyn-worker /usr/local/bin/brevyn-worker
+COPY --from=build /out/brevyn-migrate /usr/local/bin/brevyn-migrate
 COPY --from=admin-web-build /src/web/admin/dist /app/web/admin/dist
 
 EXPOSE 4000

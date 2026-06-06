@@ -6,6 +6,7 @@ import { StatGrid } from "../components/StatGrid";
 import { StatusBadge } from "../components/StatusBadge";
 import {
   getGatewayGroups,
+  getOfficialCapabilities,
   getProducts,
   getSub2APISettings,
   updateGatewayGroupOfficialModels,
@@ -13,7 +14,8 @@ import {
   type GatewayGroup,
   type GatewayGroupModel,
   type GatewayGroupOfficialModelConfig,
-  type GatewayGroupOfficialPurposeConfig
+  type GatewayGroupOfficialPurposeConfig,
+  type OfficialCapabilityDefinition
 } from "../api/client";
 
 function authModeLabel(mode: string) {
@@ -145,11 +147,14 @@ function officialPurposeConfiguredLabel(config: GatewayGroupOfficialPurposeConfi
   return `${config.modelIds.length} 个 · 默认 ${config.defaultModelId || config.modelIds[0]}`;
 }
 
-function normalizedOfficialConfig(config?: GatewayGroupOfficialModelConfig): GatewayGroupOfficialModelConfig {
-  return {
-    embedding: normalizedPurposeConfig(config?.embedding),
-    vision: normalizedPurposeConfig(config?.vision)
-  };
+function normalizedOfficialConfig(config: GatewayGroupOfficialModelConfig | undefined, definitions: OfficialCapabilityDefinition[]): GatewayGroupOfficialModelConfig {
+  const out: GatewayGroupOfficialModelConfig = {};
+  const sourceDefinitions = definitions.length > 0 ? definitions : fallbackOfficialCapabilityDefinitions;
+  for (const definition of sourceDefinitions) {
+    if (!definition.enabled) continue;
+    out[definition.key] = normalizedPurposeConfig(config?.[definition.key]);
+  }
+  return out;
 }
 
 function normalizedPurposeConfig(config?: GatewayGroupOfficialPurposeConfig): GatewayGroupOfficialPurposeConfig {
@@ -166,28 +171,51 @@ function normalizedPurposeConfig(config?: GatewayGroupOfficialPurposeConfig): Ga
 }
 
 function officialConfigKey(config: GatewayGroupOfficialModelConfig) {
-  const normalized = normalizedOfficialConfig(config);
-  return JSON.stringify({
-    embedding: normalized.embedding,
-    vision: normalized.vision
-  });
+  return JSON.stringify(Object.fromEntries(Object.entries(config).sort(([left], [right]) => left.localeCompare(right))));
 }
 
 function hasCapability(model: GatewayGroupModel, capability: string) {
   return (model.capabilities ?? []).some((item) => item.toLowerCase() === capability.toLowerCase());
 }
 
-function modelHintTone(model: GatewayGroupModel, purpose: "embedding" | "vision"): "ok" | "warn" | "neutral" {
-  if (purpose === "embedding" && hasCapability(model, "embedding")) return "ok";
-  if (purpose === "vision" && hasCapability(model, "vision_input")) return "ok";
+function modelHintTone(model: GatewayGroupModel, definition: OfficialCapabilityDefinition): "ok" | "warn" | "neutral" {
+  if ((definition.modelHintCapabilities ?? []).some((capability) => hasCapability(model, capability))) return "ok";
   return "neutral";
 }
 
-function modelHintLabel(model: GatewayGroupModel, purpose: "embedding" | "vision") {
-  if (purpose === "embedding" && hasCapability(model, "embedding")) return "建议向量";
-  if (purpose === "vision" && hasCapability(model, "vision_input")) return "建议识别";
+function modelHintLabel(model: GatewayGroupModel, definition: OfficialCapabilityDefinition) {
+  if ((definition.modelHintCapabilities ?? []).some((capability) => hasCapability(model, capability))) return "建议";
   return "手动判断";
 }
+
+const fallbackOfficialCapabilityDefinitions: OfficialCapabilityDefinition[] = [
+  {
+    id: "fallback-embedding",
+    key: "embedding",
+    name: "向量检索",
+    description: "",
+    providerKind: "custom-openai",
+    adapterKind: "openai_embedding",
+    protocol: "openai_compatible",
+    modelHintCapabilities: ["embedding"],
+    minClientVersion: "",
+    enabled: true,
+    sortOrder: 10
+  },
+  {
+    id: "fallback-vision",
+    key: "vision",
+    name: "视觉识别",
+    description: "",
+    providerKind: "vision-custom-openai",
+    adapterKind: "openai_chat_completions",
+    protocol: "openai_compatible",
+    modelHintCapabilities: ["vision_input"],
+    minClientVersion: "",
+    enabled: true,
+    sortOrder: 20
+  }
+];
 
 function mappingCount(channel: GatewayChannel) {
   return Object.values(channel.modelMapping ?? {}).reduce((total, mapping) => total + Object.keys(mapping ?? {}).length, 0);
@@ -536,7 +564,13 @@ function GatewayGroupDetails({ group }: { group: GatewayGroup }) {
 
 function OfficialModelConfigPanel({ group }: { group: GatewayGroup }) {
   const queryClient = useQueryClient();
-  const initialConfig = useMemo(() => normalizedOfficialConfig(group.officialModelConfig), [group.officialModelConfig]);
+  const capabilityDefinitions = useQuery({ queryKey: ["admin-official-capabilities"], queryFn: getOfficialCapabilities });
+  const activeDefinitions = useMemo(
+    () => (capabilityDefinitions.data?.items ?? fallbackOfficialCapabilityDefinitions).filter((item) => item.enabled),
+    [capabilityDefinitions.data?.items]
+  );
+  const activeDefinitionKey = activeDefinitions.map((item) => item.key).join("|");
+  const initialConfig = useMemo(() => normalizedOfficialConfig(group.officialModelConfig, activeDefinitions), [activeDefinitionKey, group.officialModelConfig]);
   const [draft, setDraft] = useState<GatewayGroupOfficialModelConfig>(initialConfig);
   const [auditReason, setAuditReason] = useState("");
   useEffect(() => {
@@ -544,7 +578,7 @@ function OfficialModelConfigPanel({ group }: { group: GatewayGroup }) {
     setAuditReason("");
   }, [initialConfig]);
   const saveConfig = useMutation({
-    mutationFn: () => updateGatewayGroupOfficialModels(group.externalGroupId, { ...draft, auditReason }),
+    mutationFn: () => updateGatewayGroupOfficialModels(group.externalGroupId, { capabilities: draft, auditReason }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["admin-gateway-groups"] });
       setAuditReason("");
@@ -563,32 +597,24 @@ function OfficialModelConfigPanel({ group }: { group: GatewayGroup }) {
         <ShieldCheck size={17} aria-hidden="true" />
       </div>
       <div className="gateway-official-summary">
-        <div>
-          <span>Embedding</span>
-          <strong>{officialPurposeConfiguredLabel(draft.embedding)}</strong>
-        </div>
-        <div>
-          <span>Vision</span>
-          <strong>{officialPurposeConfiguredLabel(draft.vision)}</strong>
-        </div>
+        {activeDefinitions.map((definition) => (
+          <div key={definition.key}>
+            <span>{definition.name}</span>
+            <strong>{officialPurposeConfiguredLabel(draft[definition.key] ?? normalizedPurposeConfig())}</strong>
+          </div>
+        ))}
       </div>
       <div className="gateway-official-grid">
-        <OfficialPurposeEditor
-          purpose="embedding"
-          title="向量模型"
-          icon={<Database size={15} aria-hidden="true" />}
-          models={group.models}
-          config={draft.embedding}
-          onChange={(embedding) => setDraft((current) => ({ ...current, embedding }))}
-        />
-        <OfficialPurposeEditor
-          purpose="vision"
-          title="识别模型"
-          icon={<Eye size={15} aria-hidden="true" />}
-          models={group.models}
-          config={draft.vision}
-          onChange={(vision) => setDraft((current) => ({ ...current, vision }))}
-        />
+        {activeDefinitions.map((definition) => (
+          <OfficialPurposeEditor
+            key={definition.key}
+            definition={definition}
+            icon={definition.key === "embedding" ? <Database size={15} aria-hidden="true" /> : definition.key === "vision" ? <Eye size={15} aria-hidden="true" /> : <ShieldCheck size={15} aria-hidden="true" />}
+            models={group.models}
+            config={draft[definition.key] ?? normalizedPurposeConfig()}
+            onChange={(config) => setDraft((current) => ({ ...current, [definition.key]: config }))}
+          />
+        ))}
       </div>
       <div className="gateway-official-actions">
         <input
@@ -612,15 +638,13 @@ function OfficialModelConfigPanel({ group }: { group: GatewayGroup }) {
 }
 
 function OfficialPurposeEditor({
-  purpose,
-  title,
+  definition,
   icon,
   models,
   config,
   onChange
 }: {
-  purpose: "embedding" | "vision";
-  title: string;
+  definition: OfficialCapabilityDefinition;
   icon: ReactNode;
   models: GatewayGroupModel[];
   config: GatewayGroupOfficialPurposeConfig;
@@ -650,7 +674,7 @@ function OfficialPurposeEditor({
       <div className="gateway-official-purpose-heading">
         <div>
           {icon}
-          <strong>{title}</strong>
+          <strong>{definition.name}</strong>
         </div>
         <StatusBadge tone={config.modelIds.length > 0 ? "ok" : "neutral"}>{`${config.modelIds.length} models`}</StatusBadge>
       </div>
@@ -669,7 +693,7 @@ function OfficialPurposeEditor({
         {models.map((model) => {
           const checked = selected.has(model.modelId.toLowerCase());
           return (
-            <label className="gateway-official-model-row" key={`${purpose}-${model.id}`}>
+            <label className="gateway-official-model-row" key={`${definition.key}-${model.id}`}>
               <input
                 type="checkbox"
                 checked={checked}
@@ -679,8 +703,8 @@ function OfficialPurposeEditor({
                 <strong>{model.displayName}</strong>
                 <code>{model.modelId}</code>
               </span>
-              <StatusBadge tone={modelHintTone(model, purpose)}>
-                {modelHintLabel(model, purpose)}
+              <StatusBadge tone={modelHintTone(model, definition)}>
+                {modelHintLabel(model, definition)}
               </StatusBadge>
               <button
                 type="button"
