@@ -58,6 +58,7 @@ func (h *Handler) RetryRedemptionSync(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "user_not_active", "status": target.User.Status})
 		return
 	}
+	defer h.redeem.InvalidateGatewayEntitlementsCache(c.Request.Context(), target.User.DBID)
 	operationID, _ := operations.EnsureRedemptionSync(c.Request.Context(), h.postgres, target.DBID, target.PublicID, target.User.DBID)
 	_, _ = h.postgres.Exec(c.Request.Context(), `
 		UPDATE gateway_operations

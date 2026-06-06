@@ -164,6 +164,9 @@ func (s *GatewaySyncService) InvalidateGatewayEntitlementsCache(ctx context.Cont
 	if s == nil || s.redis == nil || userID <= 0 {
 		return
 	}
+	if ctx == nil || ctx.Err() != nil {
+		ctx = context.Background()
+	}
 	userIDText := strconv.FormatInt(userID, 10)
 	_ = s.redis.Del(ctx,
 		"brevyn:gateway-entitlements:"+userIDText,
@@ -282,11 +285,14 @@ func normalizedGatewayOperation(target SyncTarget) string {
 }
 
 func syncSub2APISubscription(ctx context.Context, client *sub2api.Client, externalUserID int64, target SyncTarget, idempotencyKey string) (string, error) {
-	subscription, found, err := findRenewableSub2APISubscription(ctx, client, externalUserID, target.ExternalGroupID)
+	subscriptions, err := listSub2APISubscriptionsForGroup(ctx, client, externalUserID, target.ExternalGroupID)
 	if err != nil {
 		return "lookup_subscription", err
 	}
-	if found {
+	if _, applied := findSubscriptionAppliedByRedemption(subscriptions, target.PublicID); applied {
+		return "assign_subscription", nil
+	}
+	if subscription, renewable := latestRenewableSub2APISubscription(subscriptions, time.Now().UTC()); renewable {
 		_, err := client.ExtendSubscription(ctx, subscription.ID, sub2api.ExtendSubscriptionRequest{
 			Days: target.ValidityDays,
 		}, idempotencyKey)
@@ -301,24 +307,46 @@ func syncSub2APISubscription(ctx context.Context, client *sub2api.Client, extern
 	return "assign_subscription", err
 }
 
-func findRenewableSub2APISubscription(ctx context.Context, client *sub2api.Client, externalUserID, externalGroupID int64) (sub2api.AdminSubscription, bool, error) {
+func listSub2APISubscriptionsForGroup(ctx context.Context, client *sub2api.Client, externalUserID, externalGroupID int64) ([]sub2api.AdminSubscription, error) {
 	subscriptions, _, err := client.ListSubscriptions(ctx, sub2api.SubscriptionListFilter{
 		Page:      1,
-		PageSize:  20,
+		PageSize:  100,
 		UserID:    externalUserID,
 		GroupID:   externalGroupID,
 		SortBy:    "expires_at",
 		SortOrder: "desc",
 	})
 	if err != nil {
-		return sub2api.AdminSubscription{}, false, err
+		return nil, err
 	}
-	if len(subscriptions) == 0 {
-		return sub2api.AdminSubscription{}, false, nil
-	}
+	return subscriptions, nil
+}
 
-	latest := subscriptions[0]
-	for _, subscription := range subscriptions[1:] {
+func findSubscriptionAppliedByRedemption(subscriptions []sub2api.AdminSubscription, redemptionPublicID string) (sub2api.AdminSubscription, bool) {
+	redemptionPublicID = strings.TrimSpace(redemptionPublicID)
+	if redemptionPublicID == "" {
+		return sub2api.AdminSubscription{}, false
+	}
+	for _, subscription := range subscriptions {
+		if strings.Contains(subscription.Notes, redemptionPublicID) {
+			return subscription, true
+		}
+	}
+	return sub2api.AdminSubscription{}, false
+}
+
+func latestRenewableSub2APISubscription(subscriptions []sub2api.AdminSubscription, now time.Time) (sub2api.AdminSubscription, bool) {
+	var latest sub2api.AdminSubscription
+	found := false
+	for _, subscription := range subscriptions {
+		if !renewableSub2APISubscription(subscription, now) {
+			continue
+		}
+		if !found {
+			latest = subscription
+			found = true
+			continue
+		}
 		if subscription.ExpiresAt.After(latest.ExpiresAt) {
 			latest = subscription
 			continue
@@ -327,7 +355,18 @@ func findRenewableSub2APISubscription(ctx context.Context, client *sub2api.Clien
 			latest = subscription
 		}
 	}
-	return latest, true, nil
+	return latest, found
+}
+
+func renewableSub2APISubscription(subscription sub2api.AdminSubscription, now time.Time) bool {
+	status := strings.ToLower(strings.TrimSpace(subscription.Status))
+	if status != "" && status != "active" {
+		return false
+	}
+	if !subscription.ExpiresAt.IsZero() && !subscription.ExpiresAt.After(now) {
+		return false
+	}
+	return true
 }
 
 func (s *GatewaySyncService) EnsureSub2APIAccount(ctx context.Context, client *sub2api.Client, user GatewayUser, defaultGroupID int64) (GatewayAccountSummary, error) {
