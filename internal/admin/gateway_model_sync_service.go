@@ -37,6 +37,16 @@ type gatewayModelCandidate struct {
 	Pricing  *sub2api.ChannelModelPricing
 }
 
+type gatewayPricingIndex struct {
+	Exact     map[string]sub2api.ChannelModelPricing
+	Wildcards []gatewayWildcardPricing
+}
+
+type gatewayWildcardPricing struct {
+	Prefix  string
+	Pricing sub2api.ChannelModelPricing
+}
+
 func (s *GatewaySettingsService) SyncModels(ctx context.Context) (Sub2APIModelSyncResult, error) {
 	settings, err := s.Load(ctx)
 	if err != nil {
@@ -167,6 +177,9 @@ func (s *GatewaySettingsService) SyncModels(ctx context.Context) (Sub2APIModelSy
 				if markSyncedModel(syncedModelKeys, group.ID, candidate) {
 					syncedModels++
 				}
+			}
+			if err := backfillGatewayGroupModelPricing(ctx, tx, group, normalized); err != nil {
+				return Sub2APIModelSyncResult{}, err
 			}
 		}
 	}
@@ -615,21 +628,7 @@ func accountModelMapping(account sub2api.AdminAccount) map[string]string {
 }
 
 func supportedGatewayModels(channel sub2api.AdminChannel) []gatewayModelCandidate {
-	pricingByPlatformModel := make(map[string]map[string]sub2api.ChannelModelPricing)
-	for _, pricing := range channel.ModelPricing {
-		platform := pricing.Platform
-		if pricingByPlatformModel[platform] == nil {
-			pricingByPlatformModel[platform] = map[string]sub2api.ChannelModelPricing{}
-		}
-		for _, model := range pricing.Models {
-			if !isConcreteModelName(model) {
-				continue
-			}
-			if _, exists := pricingByPlatformModel[platform][strings.ToLower(model)]; !exists {
-				pricingByPlatformModel[platform][strings.ToLower(model)] = pricing
-			}
-		}
-	}
+	pricingByPlatformModel := buildGatewayPricingIndex(channel.ModelPricing)
 
 	seen := map[string]gatewayModelCandidate{}
 	add := func(platform, model string, pricing *sub2api.ChannelModelPricing) {
@@ -695,14 +694,109 @@ func markSyncedModel(seen map[string]struct{}, groupID int64, candidate gatewayM
 	return true
 }
 
-func lookupModelPricing(index map[string]map[string]sub2api.ChannelModelPricing, platform, model string) *sub2api.ChannelModelPricing {
+func backfillGatewayGroupModelPricing(ctx context.Context, tx pgx.Tx, group sub2api.AdminGroup, channel sub2api.AdminChannel) error {
+	pricingByPlatformModel := buildGatewayPricingIndex(channel.ModelPricing)
+	if len(pricingByPlatformModel) == 0 {
+		return nil
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT model_id
+		FROM gateway_group_models
+		WHERE provider = 'sub2api'
+			AND external_group_id = $1
+			AND platform = $2
+			AND status = 'active'
+	`, group.ID, group.Platform)
+	if err != nil {
+		return fmt.Errorf("model_pricing_backfill_query_failed: %w", err)
+	}
+	defer rows.Close()
+
+	candidates := []gatewayModelCandidate{}
+	for rows.Next() {
+		var modelID string
+		if err := rows.Scan(&modelID); err != nil {
+			return fmt.Errorf("model_pricing_backfill_scan_failed: %w", err)
+		}
+		pricing := lookupModelPricing(pricingByPlatformModel, group.Platform, modelID)
+		if pricing == nil {
+			continue
+		}
+		candidates = append(candidates, gatewayModelCandidate{
+			Platform: group.Platform,
+			ModelID:  modelID,
+			Pricing:  pricing,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("model_pricing_backfill_iter_failed: %w", err)
+	}
+	rows.Close()
+
+	for _, candidate := range candidates {
+		if err := upsertGatewayGroupModel(ctx, tx, group, channel.ID, candidate); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func buildGatewayPricingIndex(pricings []sub2api.ChannelModelPricing) map[string]*gatewayPricingIndex {
+	index := map[string]*gatewayPricingIndex{}
+	for _, pricing := range pricings {
+		platform := strings.TrimSpace(pricing.Platform)
+		if platform == "" {
+			platform = "anthropic"
+		}
+		entry := index[platform]
+		if entry == nil {
+			entry = &gatewayPricingIndex{Exact: map[string]sub2api.ChannelModelPricing{}}
+			index[platform] = entry
+		}
+		pricing.Platform = platform
+		for _, model := range pricing.Models {
+			model = strings.TrimSpace(model)
+			if model == "" {
+				continue
+			}
+			if strings.HasSuffix(model, "*") {
+				entry.Wildcards = append(entry.Wildcards, gatewayWildcardPricing{
+					Prefix:  strings.ToLower(strings.TrimSuffix(model, "*")),
+					Pricing: pricing,
+				})
+				continue
+			}
+			if !isConcreteModelName(model) {
+				continue
+			}
+			key := strings.ToLower(model)
+			if _, exists := entry.Exact[key]; !exists {
+				entry.Exact[key] = pricing
+			}
+		}
+	}
+	return index
+}
+
+func lookupModelPricing(index map[string]*gatewayPricingIndex, platform, model string) *sub2api.ChannelModelPricing {
+	platform = strings.TrimSpace(platform)
+	if platform == "" {
+		platform = "anthropic"
+	}
 	model = strings.TrimSpace(model)
 	if model == "" {
 		return nil
 	}
-	if byModel := index[platform]; byModel != nil {
-		if pricing, ok := byModel[strings.ToLower(model)]; ok {
+	modelLower := strings.ToLower(model)
+	if entry := index[platform]; entry != nil {
+		if pricing, ok := entry.Exact[modelLower]; ok {
 			return &pricing
+		}
+		for _, wildcard := range entry.Wildcards {
+			if strings.HasPrefix(modelLower, wildcard.Prefix) {
+				pricing := wildcard.Pricing
+				return &pricing
+			}
 		}
 	}
 	return nil
@@ -750,6 +844,16 @@ func modelDisplayName(modelID string) string {
 func modelCapabilitiesJSON(modelID string) string {
 	capabilities := []string{"chat"}
 	lower := strings.ToLower(modelID)
+	if strings.Contains(lower, "embedding") ||
+		strings.Contains(lower, "embed") ||
+		strings.Contains(lower, "bge") ||
+		strings.Contains(lower, "gte") ||
+		strings.Contains(lower, "e5") ||
+		strings.Contains(lower, "jina") ||
+		strings.Contains(lower, "voyage") {
+		raw, _ := json.Marshal([]string{"embedding"})
+		return string(raw)
+	}
 	if strings.Contains(lower, "claude") ||
 		strings.Contains(lower, "vision") ||
 		strings.Contains(lower, "vl") ||

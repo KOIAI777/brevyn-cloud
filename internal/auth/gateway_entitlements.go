@@ -18,6 +18,7 @@ import (
 const (
 	gatewayEntitlementsCacheTTL      = 30 * time.Second
 	gatewayEntitlementsStaleCacheTTL = 10 * time.Minute
+	gatewayEntitlementsForceTTL      = 15 * time.Second
 )
 
 type gatewayEntitlementsResponse struct {
@@ -27,6 +28,8 @@ type gatewayEntitlementsResponse struct {
 	SubscriptionGroups []subscriptionGroupEntitlement `json:"subscriptionGroups"`
 	UpdatedAt          time.Time                      `json:"updatedAt"`
 	Stale              bool                           `json:"stale"`
+	RefreshLimited     bool                           `json:"refreshLimited,omitempty"`
+	NextRefreshAfter   int                            `json:"nextRefreshAfterSeconds,omitempty"`
 }
 
 type gatewayEntitlementWallet struct {
@@ -38,48 +41,54 @@ type gatewayEntitlementWallet struct {
 }
 
 type balanceGroupEntitlement struct {
-	ExternalGroupID  int64   `json:"externalGroupId"`
-	Name             string  `json:"name"`
-	Description      string  `json:"description,omitempty"`
-	Platform         string  `json:"platform"`
-	BillingKind      string  `json:"billingKind"`
-	SubscriptionType string  `json:"subscriptionType"`
-	BalanceScope     string  `json:"balanceScope"`
-	Remaining        float64 `json:"remaining"`
-	Unit             string  `json:"unit"`
-	RateMultiplier   float64 `json:"rateMultiplier"`
-	Status           string  `json:"status"`
-	GroupStatus      string  `json:"groupStatus,omitempty"`
-	ModelCount       int     `json:"modelCount"`
-	Source           string  `json:"source,omitempty"`
-	IsCurrent        bool    `json:"isCurrent"`
+	ExternalGroupID      int64                `json:"externalGroupId"`
+	Name                 string               `json:"name"`
+	Description          string               `json:"description,omitempty"`
+	Platform             string               `json:"platform"`
+	BillingKind          string               `json:"billingKind"`
+	SubscriptionType     string               `json:"subscriptionType"`
+	BalanceScope         string               `json:"balanceScope"`
+	Limit                float64              `json:"limit"`
+	Used                 float64              `json:"used"`
+	Remaining            float64              `json:"remaining"`
+	Unit                 string               `json:"unit"`
+	RateMultiplier       float64              `json:"rateMultiplier"`
+	Status               string               `json:"status"`
+	GroupStatus          string               `json:"groupStatus,omitempty"`
+	ModelCount           int                  `json:"modelCount"`
+	Source               string               `json:"source,omitempty"`
+	IsCurrent            bool                 `json:"isCurrent"`
+	OfficialModelConfig  *officialModelConfig `json:"officialModelConfig,omitempty"`
+	OfficialCapabilities []string             `json:"officialCapabilities,omitempty"`
 }
 
 type subscriptionGroupEntitlement struct {
-	ExternalGroupID     int64                   `json:"externalGroupId"`
-	Name                string                  `json:"name"`
-	Description         string                  `json:"description,omitempty"`
-	Platform            string                  `json:"platform"`
-	BillingKind         string                  `json:"billingKind"`
-	SubscriptionType    string                  `json:"subscriptionType"`
-	RateMultiplier      float64                 `json:"rateMultiplier"`
-	Status              string                  `json:"status"`
-	GroupStatus         string                  `json:"groupStatus,omitempty"`
-	ModelCount          int                     `json:"modelCount"`
-	Source              string                  `json:"source,omitempty"`
-	IsCurrent           bool                    `json:"isCurrent"`
-	SubscriptionID      *int64                  `json:"subscriptionId,omitempty"`
-	StartsAt            *time.Time              `json:"startsAt,omitempty"`
-	ExpiresAt           *time.Time              `json:"expiresAt,omitempty"`
-	Remaining           float64                 `json:"remaining"`
-	Unit                string                  `json:"unit"`
-	Unlimited           bool                    `json:"unlimited"`
-	ConstrainingWindow  string                  `json:"constrainingWindow,omitempty"`
-	DepletedWindow      string                  `json:"depletedWindow,omitempty"`
-	Daily               *entitlementQuotaWindow `json:"daily,omitempty"`
-	Weekly              *entitlementQuotaWindow `json:"weekly,omitempty"`
-	Monthly             *entitlementQuotaWindow `json:"monthly,omitempty"`
-	DefaultValidityDays int                     `json:"defaultValidityDays"`
+	ExternalGroupID      int64                   `json:"externalGroupId"`
+	Name                 string                  `json:"name"`
+	Description          string                  `json:"description,omitempty"`
+	Platform             string                  `json:"platform"`
+	BillingKind          string                  `json:"billingKind"`
+	SubscriptionType     string                  `json:"subscriptionType"`
+	RateMultiplier       float64                 `json:"rateMultiplier"`
+	Status               string                  `json:"status"`
+	GroupStatus          string                  `json:"groupStatus,omitempty"`
+	ModelCount           int                     `json:"modelCount"`
+	Source               string                  `json:"source,omitempty"`
+	IsCurrent            bool                    `json:"isCurrent"`
+	SubscriptionID       *int64                  `json:"subscriptionId,omitempty"`
+	StartsAt             *time.Time              `json:"startsAt,omitempty"`
+	ExpiresAt            *time.Time              `json:"expiresAt,omitempty"`
+	Remaining            float64                 `json:"remaining"`
+	Unit                 string                  `json:"unit"`
+	Unlimited            bool                    `json:"unlimited"`
+	ConstrainingWindow   string                  `json:"constrainingWindow,omitempty"`
+	DepletedWindow       string                  `json:"depletedWindow,omitempty"`
+	Daily                *entitlementQuotaWindow `json:"daily,omitempty"`
+	Weekly               *entitlementQuotaWindow `json:"weekly,omitempty"`
+	Monthly              *entitlementQuotaWindow `json:"monthly,omitempty"`
+	DefaultValidityDays  int                     `json:"defaultValidityDays"`
+	OfficialModelConfig  *officialModelConfig    `json:"officialModelConfig,omitempty"`
+	OfficialCapabilities []string                `json:"officialCapabilities,omitempty"`
 }
 
 type entitlementQuotaWindow struct {
@@ -101,7 +110,22 @@ func (h *Handler) GatewayEntitlements(c *gin.Context) {
 	ctx := c.Request.Context()
 	cacheKey := gatewayEntitlementsCacheKey(user.ID)
 	staleKey := gatewayEntitlementsStaleCacheKey(user.ID)
-	if !truthy(c.Query("refresh")) {
+	forceRefresh := truthy(c.Query("refresh"))
+	if forceRefresh {
+		if retryAfter, limited := h.gatewayEntitlementsForceLimited(ctx, user.ID); limited {
+			if cached, ok := h.gatewayEntitlementsFromCache(ctx, cacheKey); ok {
+				markRefreshLimited(cached, retryAfter)
+				c.JSON(http.StatusOK, cached)
+				return
+			}
+			if cached, ok := h.gatewayEntitlementsFromCache(ctx, staleKey); ok {
+				cached.Stale = true
+				markRefreshLimited(cached, retryAfter)
+				c.JSON(http.StatusOK, cached)
+				return
+			}
+		}
+	} else {
 		if cached, ok := h.gatewayEntitlementsFromCache(ctx, cacheKey); ok {
 			c.JSON(http.StatusOK, cached)
 			return
@@ -167,6 +191,10 @@ func (h *Handler) loadGatewayEntitlements(ctx context.Context, user Principal) (
 	}
 	resp.Wallet.Remaining = sub2User.Balance
 	resp.Wallet.Status = walletStatus(sub2User)
+	balanceLimit, err := h.balanceEntitlementLimit(ctx, user.ID, sub2User.Balance)
+	if err != nil {
+		return nil, fmt.Errorf("wallet credit total: %w", err)
+	}
 
 	subscriptions, _, err := sub2.ListSubscriptions(ctx, sub2api.SubscriptionListFilter{
 		Page:     1,
@@ -179,6 +207,9 @@ func (h *Handler) loadGatewayEntitlements(ctx context.Context, user Principal) (
 	}
 
 	groups = mergeSubscriptionGroups(groups, subscriptions, gateway.DefaultGroupID)
+	if err := h.attachOfficialModelConfigs(ctx, groups); err != nil {
+		return nil, fmt.Errorf("official model configs: %w", err)
+	}
 	subscriptionsByGroup := activeSubscriptionsByGroup(subscriptions)
 	slices.SortFunc(groups, func(a, b gatewayGroupSummary) int {
 		if a.ExternalGroupID == gateway.DefaultGroupID && b.ExternalGroupID != gateway.DefaultGroupID {
@@ -203,48 +234,81 @@ func (h *Handler) loadGatewayEntitlements(ctx context.Context, user Principal) (
 			resp.SubscriptionGroups = append(resp.SubscriptionGroups, buildSubscriptionGroupEntitlement(group, sub, now))
 			continue
 		}
-		resp.BalanceGroups = append(resp.BalanceGroups, buildBalanceGroupEntitlement(group, sub2User))
+		resp.BalanceGroups = append(resp.BalanceGroups, buildBalanceGroupEntitlement(group, sub2User, balanceLimit))
 	}
 
 	return resp, nil
 }
 
-func buildBalanceGroupEntitlement(group gatewayGroupSummary, user *sub2api.User) balanceGroupEntitlement {
-	return balanceGroupEntitlement{
-		ExternalGroupID:  group.ExternalGroupID,
-		Name:             group.Name,
-		Description:      group.Description,
-		Platform:         group.Platform,
-		BillingKind:      "balance",
-		SubscriptionType: "standard",
-		BalanceScope:     "user",
-		Remaining:        user.Balance,
-		Unit:             "USD",
-		RateMultiplier:   group.RateMultiplier,
-		Status:           balanceGroupStatus(group, user),
-		GroupStatus:      group.Status,
-		ModelCount:       group.ModelCount,
-		Source:           group.Source,
-		IsCurrent:        group.IsCurrent,
+func buildBalanceGroupEntitlement(group gatewayGroupSummary, user *sub2api.User, limit float64) balanceGroupEntitlement {
+	remaining := user.Balance
+	if remaining < 0 {
+		remaining = 0
 	}
+	if limit < remaining {
+		limit = remaining
+	}
+	used := limit - remaining
+	if used < 0 {
+		used = 0
+	}
+	return balanceGroupEntitlement{
+		ExternalGroupID:      group.ExternalGroupID,
+		Name:                 group.Name,
+		Description:          group.Description,
+		Platform:             group.Platform,
+		BillingKind:          "balance",
+		SubscriptionType:     "standard",
+		BalanceScope:         "user",
+		Limit:                limit,
+		Used:                 used,
+		Remaining:            remaining,
+		Unit:                 "USD",
+		RateMultiplier:       group.RateMultiplier,
+		Status:               balanceGroupStatus(group, user),
+		GroupStatus:          group.Status,
+		ModelCount:           group.ModelCount,
+		Source:               group.Source,
+		IsCurrent:            group.IsCurrent,
+		OfficialModelConfig:  group.OfficialModelConfig,
+		OfficialCapabilities: group.OfficialCapabilities,
+	}
+}
+
+func (h *Handler) balanceEntitlementLimit(ctx context.Context, userID int64, remaining float64) (float64, error) {
+	var credited float64
+	err := h.postgres.QueryRow(ctx, `
+		SELECT coalesce(sum(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0)
+		FROM wallet_transactions
+		WHERE user_id = $1
+	`, userID).Scan(&credited)
+	if err != nil {
+		return 0, err
+	}
+	if credited < remaining {
+		return remaining, nil
+	}
+	return credited, nil
 }
 
 func buildSubscriptionGroupEntitlement(group gatewayGroupSummary, sub *sub2api.AdminSubscription, now time.Time) subscriptionGroupEntitlement {
 	item := subscriptionGroupEntitlement{
-		ExternalGroupID:     group.ExternalGroupID,
-		Name:                group.Name,
-		Description:         group.Description,
-		Platform:            group.Platform,
-		BillingKind:         "subscription",
-		SubscriptionType:    "subscription",
-		RateMultiplier:      group.RateMultiplier,
-		Status:              "not_subscribed",
-		GroupStatus:         group.Status,
-		ModelCount:          group.ModelCount,
-		Source:              group.Source,
-		IsCurrent:           group.IsCurrent,
-		Unit:                "USD",
-		DefaultValidityDays: group.DefaultValidityDays,
+		ExternalGroupID:      group.ExternalGroupID,
+		Name:                 group.Name,
+		Description:          group.Description,
+		Platform:             group.Platform,
+		BillingKind:          "subscription",
+		SubscriptionType:     "subscription",
+		RateMultiplier:       group.RateMultiplier,
+		Status:               "not_subscribed",
+		GroupStatus:          group.Status,
+		ModelCount:           group.ModelCount,
+		Source:               group.Source,
+		IsCurrent:            group.IsCurrent,
+		Unit:                 "USD",
+		DefaultValidityDays:  group.DefaultValidityDays,
+		OfficialModelConfig:  group.OfficialModelConfig,
+		OfficialCapabilities: group.OfficialCapabilities,
 	}
 	if sub == nil {
 		return item
@@ -454,8 +518,47 @@ func gatewayEntitlementsStaleCacheKey(userID int64) string {
 	return fmt.Sprintf("brevyn:gateway-entitlements:stale:%d", userID)
 }
 
+func gatewayEntitlementsForceKey(userID int64) string {
+	return fmt.Sprintf("brevyn:gateway-entitlements:force:%d", userID)
+}
+
 func gatewayEntitlementsTTL(userID int64) time.Duration {
 	return gatewayEntitlementsCacheTTL + time.Duration(userID%15)*time.Second
+}
+
+func (h *Handler) gatewayEntitlementsForceLimited(ctx context.Context, userID int64) (time.Duration, bool) {
+	if h.redis == nil {
+		return 0, false
+	}
+	key := gatewayEntitlementsForceKey(userID)
+	ok, err := h.redis.SetNX(ctx, key, "1", gatewayEntitlementsForceTTL).Result()
+	if err != nil || ok {
+		return 0, false
+	}
+	ttl, err := h.redis.TTL(ctx, key).Result()
+	if err != nil || ttl <= 0 {
+		return gatewayEntitlementsForceTTL, true
+	}
+	return ttl, true
+}
+
+func (h *Handler) invalidateGatewayEntitlementsCache(ctx context.Context, userID int64) {
+	if h.redis == nil {
+		return
+	}
+	_ = h.redis.Del(ctx,
+		gatewayEntitlementsCacheKey(userID),
+		gatewayEntitlementsStaleCacheKey(userID),
+		gatewayEntitlementsForceKey(userID),
+	).Err()
+}
+
+func markRefreshLimited(resp *gatewayEntitlementsResponse, retryAfter time.Duration) {
+	resp.RefreshLimited = true
+	resp.NextRefreshAfter = int((retryAfter + time.Second - 1) / time.Second)
+	if resp.NextRefreshAfter < 1 {
+		resp.NextRefreshAfter = 1
+	}
 }
 
 func (h *Handler) gatewayEntitlementsFromCache(ctx context.Context, key string) (*gatewayEntitlementsResponse, bool) {

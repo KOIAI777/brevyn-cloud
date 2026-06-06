@@ -47,6 +47,7 @@ func (s *GatewayGroupService) List(ctx context.Context) ([]GatewayGroupItem, err
 		item.Models = []GatewayGroupModelItem{}
 		item.Accounts = []GatewayUpstreamAccountItem{}
 		item.Channels = []GatewayChannelItem{}
+		item.OfficialModelConfig = emptyGatewayGroupOfficialConfig()
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -56,6 +57,9 @@ func (s *GatewayGroupService) List(ctx context.Context) ([]GatewayGroupItem, err
 	if err := s.attachModels(ctx, items); err != nil {
 		return nil, err
 	}
+	if err := s.attachOfficialModelConfig(ctx, items); err != nil {
+		return nil, err
+	}
 	if err := s.attachUpstreamAccounts(ctx, items); err != nil {
 		return nil, err
 	}
@@ -63,6 +67,13 @@ func (s *GatewayGroupService) List(ctx context.Context) ([]GatewayGroupItem, err
 		return nil, err
 	}
 	return items, nil
+}
+
+func emptyGatewayGroupOfficialConfig() GatewayGroupOfficialConfig {
+	return GatewayGroupOfficialConfig{
+		Embedding: GatewayGroupOfficialPurposeConfig{ModelIDs: []string{}},
+		Vision:    GatewayGroupOfficialPurposeConfig{ModelIDs: []string{}},
+	}
 }
 
 func (s *GatewayGroupService) Create(ctx context.Context, req createGatewayGroupRequest) (GatewayGroupItem, error) {
@@ -355,7 +366,7 @@ func (s *GatewayGroupService) attachModels(ctx context.Context, groups []Gateway
 
 	rows, err := s.postgres.Query(ctx, `
 		SELECT ggm.provider, ggm.external_group_id, ggm.public_id, ggm.external_channel_id, ggm.platform,
-			ggm.model_id, ggm.display_name, ggm.provider_family, ggm.pricing_json, ggm.billing_mode,
+			ggm.model_id, ggm.display_name, ggm.provider_family, ggm.capabilities_json, ggm.pricing_json, ggm.billing_mode,
 			ggm.status, ggm.last_synced_at, coalesce(gc.name, '')
 		FROM gateway_group_models ggm
 		LEFT JOIN gateway_channels gc
@@ -372,6 +383,7 @@ func (s *GatewayGroupService) attachModels(ctx context.Context, groups []Gateway
 		var provider string
 		var externalGroupID int64
 		var item GatewayGroupModelItem
+		var capabilitiesJSON string
 		if err := rows.Scan(
 			&provider,
 			&externalGroupID,
@@ -381,6 +393,7 @@ func (s *GatewayGroupService) attachModels(ctx context.Context, groups []Gateway
 			&item.ModelID,
 			&item.DisplayName,
 			&item.ProviderFamily,
+			&capabilitiesJSON,
 			&item.Pricing,
 			&item.BillingMode,
 			&item.Status,
@@ -388,6 +401,9 @@ func (s *GatewayGroupService) attachModels(ctx context.Context, groups []Gateway
 			&item.ChannelName,
 		); err != nil {
 			return err
+		}
+		if err := json.Unmarshal([]byte(capabilitiesJSON), &item.Capabilities); err != nil {
+			item.Capabilities = []string{}
 		}
 		item.SourceType = gatewayModelSourceType(item)
 		item.PricingStatus = gatewayModelPricingStatus(item)
@@ -403,6 +419,227 @@ func (s *GatewayGroupService) attachModels(ctx context.Context, groups []Gateway
 		}
 	}
 	return rows.Err()
+}
+
+func (s *GatewayGroupService) attachOfficialModelConfig(ctx context.Context, groups []GatewayGroupItem) error {
+	if len(groups) == 0 {
+		return nil
+	}
+	type groupKey struct {
+		provider        string
+		externalGroupID int64
+	}
+	groupIndexes := make(map[groupKey]int, len(groups))
+	for index, group := range groups {
+		groups[index].OfficialModelConfig = emptyGatewayGroupOfficialConfig()
+		groupIndexes[groupKey{provider: group.Provider, externalGroupID: group.ExternalGroupID}] = index
+	}
+	rows, err := s.postgres.Query(ctx, `
+		SELECT provider, external_group_id, purpose, model_id, is_default
+		FROM gateway_group_model_roles
+		WHERE provider = 'sub2api' AND enabled = true
+			AND purpose = ANY($1::text[])
+		ORDER BY external_group_id ASC, purpose ASC, sort_order ASC, model_id ASC
+	`, []string{"embedding", "vision"})
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var provider string
+		var externalGroupID int64
+		var purpose string
+		var modelID string
+		var isDefault bool
+		if err := rows.Scan(&provider, &externalGroupID, &purpose, &modelID, &isDefault); err != nil {
+			return err
+		}
+		index, ok := groupIndexes[groupKey{provider: provider, externalGroupID: externalGroupID}]
+		if !ok {
+			continue
+		}
+		switch purpose {
+		case "embedding":
+			groups[index].OfficialModelConfig.Embedding.ModelIDs = append(groups[index].OfficialModelConfig.Embedding.ModelIDs, modelID)
+			if isDefault {
+				groups[index].OfficialModelConfig.Embedding.DefaultModelID = modelID
+			}
+		case "vision":
+			groups[index].OfficialModelConfig.Vision.ModelIDs = append(groups[index].OfficialModelConfig.Vision.ModelIDs, modelID)
+			if isDefault {
+				groups[index].OfficialModelConfig.Vision.DefaultModelID = modelID
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for index := range groups {
+		ensureOfficialPurposeDefault(&groups[index].OfficialModelConfig.Embedding)
+		ensureOfficialPurposeDefault(&groups[index].OfficialModelConfig.Vision)
+	}
+	return nil
+}
+
+func (s *GatewayGroupService) UpdateOfficialModelConfig(ctx context.Context, externalGroupID int64, req updateGatewayGroupOfficialModelsRequest) (GatewayGroupOfficialConfig, error) {
+	if externalGroupID <= 0 {
+		return emptyGatewayGroupOfficialConfig(), fmt.Errorf("invalid_external_group_id")
+	}
+	config := GatewayGroupOfficialConfig{
+		Embedding: normalizeOfficialPurposeConfig(req.Embedding),
+		Vision:    normalizeOfficialPurposeConfig(req.Vision),
+	}
+	if err := s.validateOfficialModelConfig(ctx, externalGroupID, config); err != nil {
+		return emptyGatewayGroupOfficialConfig(), err
+	}
+	tx, err := s.postgres.Begin(ctx)
+	if err != nil {
+		return emptyGatewayGroupOfficialConfig(), err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM gateway_group_model_roles
+		WHERE provider = 'sub2api' AND external_group_id = $1 AND purpose = ANY($2::text[])
+	`, externalGroupID, []string{"embedding", "vision"}); err != nil {
+		return emptyGatewayGroupOfficialConfig(), err
+	}
+	insertPurpose := func(purpose string, purposeConfig GatewayGroupOfficialPurposeConfig) error {
+		for index, modelID := range purposeConfig.ModelIDs {
+			_, err := tx.Exec(ctx, `
+				INSERT INTO gateway_group_model_roles (
+					public_id, provider, external_group_id, purpose, model_id,
+					enabled, is_default, sort_order
+				)
+				VALUES ($1, 'sub2api', $2, $3, $4, true, $5, $6)
+			`, "ggmr_"+uuid.NewString(), externalGroupID, purpose, modelID, modelID == purposeConfig.DefaultModelID, index)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := insertPurpose("embedding", config.Embedding); err != nil {
+		return emptyGatewayGroupOfficialConfig(), err
+	}
+	if err := insertPurpose("vision", config.Vision); err != nil {
+		return emptyGatewayGroupOfficialConfig(), err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE gateway_groups
+		SET updated_at = now()
+		WHERE provider = 'sub2api' AND external_group_id = $1
+	`, externalGroupID); err != nil {
+		return emptyGatewayGroupOfficialConfig(), err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return emptyGatewayGroupOfficialConfig(), err
+	}
+	return config, nil
+}
+
+func normalizeOfficialPurposeConfig(config GatewayGroupOfficialPurposeConfig) GatewayGroupOfficialPurposeConfig {
+	seen := map[string]struct{}{}
+	modelIDs := []string{}
+	for _, modelID := range config.ModelIDs {
+		modelID = strings.TrimSpace(modelID)
+		if modelID == "" {
+			continue
+		}
+		key := strings.ToLower(modelID)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		modelIDs = append(modelIDs, modelID)
+	}
+	out := GatewayGroupOfficialPurposeConfig{
+		ModelIDs:       modelIDs,
+		DefaultModelID: strings.TrimSpace(config.DefaultModelID),
+	}
+	ensureOfficialPurposeDefault(&out)
+	return out
+}
+
+func ensureOfficialPurposeDefault(config *GatewayGroupOfficialPurposeConfig) {
+	if len(config.ModelIDs) == 0 {
+		config.DefaultModelID = ""
+		return
+	}
+	for _, modelID := range config.ModelIDs {
+		if strings.EqualFold(modelID, config.DefaultModelID) {
+			config.DefaultModelID = modelID
+			return
+		}
+	}
+	config.DefaultModelID = config.ModelIDs[0]
+}
+
+func (s *GatewayGroupService) validateOfficialModelConfig(ctx context.Context, externalGroupID int64, config GatewayGroupOfficialConfig) error {
+	var groupExists bool
+	if err := s.postgres.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM gateway_groups
+			WHERE provider = 'sub2api' AND external_group_id = $1
+		)
+	`, externalGroupID).Scan(&groupExists); err != nil {
+		return err
+	}
+	if !groupExists {
+		return fmt.Errorf("gateway_group_not_found")
+	}
+	rows, err := s.postgres.Query(ctx, `
+		SELECT model_id
+		FROM gateway_group_models
+		WHERE provider = 'sub2api' AND external_group_id = $1 AND status = 'active'
+	`, externalGroupID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	available := map[string]string{}
+	for rows.Next() {
+		var modelID string
+		if err := rows.Scan(&modelID); err != nil {
+			return err
+		}
+		available[strings.ToLower(modelID)] = modelID
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	validatePurpose := func(config GatewayGroupOfficialPurposeConfig) error {
+		for _, modelID := range config.ModelIDs {
+			if _, ok := available[strings.ToLower(modelID)]; !ok {
+				return fmt.Errorf("official_model_not_in_group")
+			}
+		}
+		if config.DefaultModelID != "" {
+			found := false
+			for _, modelID := range config.ModelIDs {
+				if strings.EqualFold(modelID, config.DefaultModelID) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("official_default_model_not_enabled")
+			}
+		}
+		return nil
+	}
+	if err := validatePurpose(config.Embedding); err != nil {
+		return err
+	}
+	return validatePurpose(config.Vision)
+}
+
+func isOfficialModelConfigValidationError(err error) bool {
+	switch err.Error() {
+	case "invalid_external_group_id", "gateway_group_not_found", "official_model_not_in_group", "official_default_model_not_enabled":
+		return true
+	default:
+		return false
+	}
 }
 
 func gatewayModelSourceType(item GatewayGroupModelItem) string {

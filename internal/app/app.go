@@ -15,7 +15,6 @@ import (
 	"github.com/brevyn/brevyn-cloud/internal/health"
 	httpapi "github.com/brevyn/brevyn-cloud/internal/http"
 	"github.com/brevyn/brevyn-cloud/internal/platform"
-	"github.com/brevyn/brevyn-cloud/internal/providers"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -52,16 +51,18 @@ func New(ctx context.Context, cfg *config.Config, logger *slog.Logger) (*App, er
 	})
 
 	router := httpapi.NewRouter(cfg, logger, httpapi.Dependencies{
-		Health:    health.NewHandler(postgres, redisClient),
-		Admin:     admin.NewHandler(cfg, postgres, redisClient),
-		Auth:      auth.NewHandler(cfg, postgres, redisClient, sub2),
-		Providers: providers.NewHandler(cfg, sub2),
+		Health: health.NewHandler(postgres, redisClient),
+		Admin:  admin.NewHandler(cfg, postgres, redisClient),
+		Auth:   auth.NewHandler(cfg, postgres, redisClient, sub2),
 	})
 
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
 		Handler:           router,
+		ReadTimeout:       30 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      5 * time.Minute,
+		IdleTimeout:       120 * time.Second,
 	}
 
 	return &App{

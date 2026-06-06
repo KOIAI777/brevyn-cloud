@@ -88,7 +88,7 @@ worker 重试网关操作
 流程：
 
 ```text
-打开 /app
+打开 Electron App
 未登录时不请求用户模型目录
 登录后再请求 /api/v1/me、/api/v1/me/groups、/api/v1/provider/official?externalGroupId=xxx
 ```

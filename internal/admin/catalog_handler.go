@@ -58,6 +58,7 @@ type GatewayGroupItem struct {
 	Models                          []GatewayGroupModelItem      `json:"models"`
 	Accounts                        []GatewayUpstreamAccountItem `json:"accounts"`
 	Channels                        []GatewayChannelItem         `json:"channels"`
+	OfficialModelConfig             GatewayGroupOfficialConfig    `json:"officialModelConfig"`
 	UpstreamAccountCount            int                          `json:"upstreamAccountCount"`
 	ActiveSchedulableAccountCount   int                          `json:"activeSchedulableAccountCount"`
 	ChannelCount                    int                          `json:"channelCount"`
@@ -72,6 +73,7 @@ type GatewayGroupModelItem struct {
 	ModelID           string          `json:"modelId"`
 	DisplayName       string          `json:"displayName"`
 	ProviderFamily    string          `json:"providerFamily"`
+	Capabilities      []string        `json:"capabilities"`
 	Pricing           json.RawMessage `json:"pricing"`
 	BillingMode       string          `json:"billingMode"`
 	Status            string          `json:"status"`
@@ -79,6 +81,16 @@ type GatewayGroupModelItem struct {
 	SourceType        string          `json:"sourceType"`
 	PricingStatus     string          `json:"pricingStatus"`
 	ChannelName       string          `json:"channelName"`
+}
+
+type GatewayGroupOfficialConfig struct {
+	Embedding GatewayGroupOfficialPurposeConfig `json:"embedding"`
+	Vision    GatewayGroupOfficialPurposeConfig `json:"vision"`
+}
+
+type GatewayGroupOfficialPurposeConfig struct {
+	ModelIDs       []string `json:"modelIds"`
+	DefaultModelID string   `json:"defaultModelId"`
 }
 
 type GatewayChannelItem struct {
@@ -225,6 +237,13 @@ type createGatewayGroupRequest struct {
 	Status              string   `json:"status"`
 }
 
+type updateGatewayGroupOfficialModelsRequest struct {
+	Embedding GatewayGroupOfficialPurposeConfig `json:"embedding"`
+	Vision    GatewayGroupOfficialPurposeConfig `json:"vision"`
+	AuditReason string                           `json:"auditReason"`
+	Reason      string                           `json:"reason"`
+}
+
 type createProductRequest struct {
 	SKU              string   `json:"sku"`
 	Name             string   `json:"name"`
@@ -285,6 +304,41 @@ func (h *Handler) CreateGatewayGroup(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{"group": item})
+}
+
+func (h *Handler) UpdateGatewayGroupOfficialModels(c *gin.Context) {
+	externalGroupID, err := strconv.ParseInt(strings.TrimSpace(c.Param("externalGroupId")), 10, 64)
+	if err != nil || externalGroupID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_external_group_id"})
+		return
+	}
+	var req updateGatewayGroupOfficialModelsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		return
+	}
+	auditReason, ok := requireAuditReason(c, req.AuditReason, req.Reason)
+	if !ok {
+		return
+	}
+	config, err := h.gatewayGroups.UpdateOfficialModelConfig(c.Request.Context(), externalGroupID, req)
+	if err != nil {
+		status := http.StatusInternalServerError
+		errorCode := "official_model_config_update_failed"
+		if isOfficialModelConfigValidationError(err) {
+			status = http.StatusBadRequest
+			errorCode = err.Error()
+		}
+		c.JSON(status, gin.H{"error": errorCode})
+		return
+	}
+	admin, _ := currentAdmin(c)
+	h.writeAuditLog(c.Request.Context(), "admin", admin.ID, "gateway_group.official_models.update", "gateway_group", strconv.FormatInt(externalGroupID, 10), c.ClientIP(), c.Request.UserAgent(), auditMetadataWithReason(auditReason, map[string]any{
+		"external_group_id": externalGroupID,
+		"embedding":         config.Embedding,
+		"vision":            config.Vision,
+	}))
+	c.JSON(http.StatusOK, gin.H{"officialModelConfig": config})
 }
 
 func (h *Handler) ListProducts(c *gin.Context) {

@@ -1,6 +1,6 @@
 import { Archive, Ban, Copy, Download, FilterX, Pencil, Plus, Save, Search, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { type ReactNode, useMemo, useState } from "react";
 import { DataTable } from "../components/DataTable";
 import { DangerConfirmModal } from "../components/DangerConfirmModal";
 import { PageHeader } from "../components/PageHeader";
@@ -236,6 +236,68 @@ function ProductGroupCell({ groups, product }: { groups: GatewayGroup[]; product
   );
 }
 
+function RedeemStepSection({
+  actions,
+  children,
+  detail,
+  status,
+  step,
+  title
+}: {
+  actions?: ReactNode;
+  children: ReactNode;
+  detail: string;
+  status?: ReactNode;
+  step: string;
+  title: string;
+}) {
+  return (
+    <section className="panel redeem-step">
+      <div className="redeem-step-heading">
+        <div className="redeem-step-title">
+          <span className="redeem-step-index">{step}</span>
+          <div>
+            <h3>{title}</h3>
+            <p>{detail}</p>
+          </div>
+        </div>
+        <div className="redeem-step-tools">
+          {status}
+          {actions}
+        </div>
+      </div>
+      <div className="redeem-step-body">{children}</div>
+    </section>
+  );
+}
+
+function RedeemSubsection({
+  actions,
+  children,
+  className = "",
+  subtitle,
+  title
+}: {
+  actions?: ReactNode;
+  children: ReactNode;
+  className?: string;
+  subtitle?: string;
+  title: string;
+}) {
+  return (
+    <article className={`redeem-subsection ${className}`}>
+      <div className="redeem-subsection-heading">
+        <div>
+          <h4>{title}</h4>
+          {subtitle ? <p>{subtitle}</p> : null}
+        </div>
+        {actions ? <div className="button-row">{actions}</div> : null}
+      </div>
+      {children}
+    </article>
+  );
+}
+
 function errorMessage(error: unknown, fallback: string) {
   return error instanceof Error && error.message ? `${fallback}: ${error.message}` : fallback;
 }
@@ -334,6 +396,7 @@ export function RedeemCodesPage() {
   const queryClient = useQueryClient();
   const [productId, setProductId] = useState("");
   const [editingProductId, setEditingProductId] = useState<string | null>(null);
+  const [isProductEditorOpen, setProductEditorOpen] = useState(false);
   const [productForm, setProductForm] = useState<ProductInput>(emptyProductForm);
   const [count, setCount] = useState(10);
   const [batchName, setBatchName] = useState("");
@@ -513,6 +576,7 @@ export function RedeemCodesPage() {
     mutationFn: () => createProduct(normalizeProductInput(productForm)),
     onSuccess: async (result) => {
       setEditingProductId(null);
+      setProductEditorOpen(false);
       setProductForm(emptyProductForm);
       setProductId(result.product.id);
       setProductNotice(`商品已创建，SKU：${result.product.sku}`);
@@ -523,6 +587,7 @@ export function RedeemCodesPage() {
     mutationFn: () => updateProduct(editingProductId!, normalizeProductInput(productForm)),
     onSuccess: async (result) => {
       setEditingProductId(null);
+      setProductEditorOpen(false);
       setProductForm(emptyProductForm);
       setProductId(result.product.id);
       setProductNotice("商品已保存");
@@ -534,6 +599,7 @@ export function RedeemCodesPage() {
     onSuccess: async (result) => {
       setArchiveProduct(null);
       setEditingProductId(null);
+      setProductEditorOpen(false);
       setProductForm(emptyProductForm);
       setProductNotice(result.mode === "archived" ? "商品已归档，不再用于新批次" : "商品已删除");
       await Promise.all([
@@ -630,6 +696,7 @@ export function RedeemCodesPage() {
     const firstSubscriptionGroup = groupRows.find((group) => group.status === "active" && group.subscriptionType === "subscription");
     const isSubscription = preset.form.benefitType === "subscription";
     setEditingProductId(null);
+    setProductEditorOpen(true);
     setProductForm({
       ...emptyProductForm,
       ...preset.form,
@@ -649,10 +716,17 @@ export function RedeemCodesPage() {
   };
   const resetProductForm = () => {
     setEditingProductId(null);
+    setProductEditorOpen(false);
     setProductForm(emptyProductForm);
+  };
+  const startCreateProduct = () => {
+    setEditingProductId(null);
+    setProductForm(emptyProductForm);
+    setProductEditorOpen(true);
   };
   const startEditProduct = (product: Product) => {
     setEditingProductId(product.id);
+    setProductEditorOpen(true);
     setProductForm(productToForm(product));
   };
 
@@ -661,20 +735,38 @@ export function RedeemCodesPage() {
       <PageHeader
         eyebrow="Codes"
         title="兑换码"
-        description="Brevyn Cloud 自有卡密；商品语义对齐 Sub2API 的 balance / subscription，兑换时再同步到网关。"
+        description="按生成、交付、追踪三步处理自有卡密，商品语义对齐 Sub2API 的 balance / subscription。"
+      />
+
+      <div className="redeem-stepper" aria-label="兑换码工作流">
+        <div className="redeem-stepper-item">
+          <span>1</span>
+          <strong>生成批次</strong>
+        </div>
+        <div className="redeem-stepper-item">
+          <span>2</span>
+          <strong>复制交付</strong>
+        </div>
+        <div className="redeem-stepper-item">
+          <span>3</span>
+          <strong>商品与追踪</strong>
+        </div>
+      </div>
+
+      {productNotice ? <div className="form-success redeem-global-notice">{productNotice}</div> : null}
+
+      <RedeemStepSection
+        step="1"
+        title="生成批次"
+        detail="选择商品、数量、来源和订单信息后生成卡密。"
+        status={<StatusBadge tone={selectedProduct ? "ok" : "warn"}>{selectedProduct ? selectedProduct.benefitType : "select product"}</StatusBadge>}
         actions={
           <button className="primary-action" disabled={!canGenerate} onClick={() => generate.mutate()} type="button">
             <Plus size={16} />
             <span>{generate.isPending ? "生成中" : "生成批次"}</span>
           </button>
         }
-      />
-
-      <section className="panel">
-        <div className="panel-heading">
-          <h3>生成批次</h3>
-          <StatusBadge tone={selectedProduct ? "ok" : "warn"}>{selectedProduct ? selectedProduct.benefitType : "select product"}</StatusBadge>
-        </div>
+      >
         <div className="form-grid">
           <label>
             商品
@@ -772,245 +864,282 @@ export function RedeemCodesPage() {
           )}
         </div>
         {generate.isError ? <div className="form-error">{errorMessage(generate.error, "生成失败，请检查商品分组和有效期")}</div> : null}
-      </section>
+      </RedeemStepSection>
 
-      {generated ? (
-        <section className="panel">
-          <div className="panel-heading">
-            <div>
-              <h3>本次生成明文</h3>
-              <p className="panel-subtitle">
-                {generated.product.name} · {generated.batch.quantity} 张 · {formatSourceLabel(generated.batch.source)}
-              </p>
+      <RedeemStepSection
+        step="2"
+        title="复制交付"
+        detail="生成成功后只展示当前批次明文，可复制或导出发货。"
+        status={<StatusBadge tone={generated ? "ok" : "neutral"}>{generated ? `${generated.batch.quantity} codes` : "waiting"}</StatusBadge>}
+      >
+        <RedeemSubsection
+          title="本次生成明文"
+          subtitle={generated ? `${generated.product.name} · ${generated.batch.quantity} 张 · ${formatSourceLabel(generated.batch.source)}` : "等待 Step 1 生成批次。"}
+          className={generated ? "redeem-result-section" : "redeem-empty-section"}
+          actions={
+            generated ? (
+              <>
+                <button className="secondary-action" onClick={() => copyText(generatedText, "卡密")} type="button">
+                  <Copy size={16} />
+                  <span>复制卡密</span>
+                </button>
+                <button className="secondary-action" onClick={() => copyText(generatedCsv, "CSV")} type="button">
+                  <Copy size={16} />
+                  <span>复制 CSV</span>
+                </button>
+                <button className="secondary-action" onClick={() => exportGenerated("csv")} type="button">
+                  <Download size={16} />
+                  <span>导出 CSV</span>
+                </button>
+                <button className="secondary-action" onClick={() => exportGenerated("txt")} type="button">
+                  <Download size={16} />
+                  <span>导出 TXT</span>
+                </button>
+              </>
+            ) : null
+          }
+        >
+          {generated ? (
+            <>
+              {generated.batch.orderRef ? <div className="batch-note-preview">联动小铺订单号：{generated.batch.orderRef}</div> : null}
+              {generated.batch.notes ? <div className="batch-note-preview">{generated.batch.notes}</div> : null}
+              {copyNotice ? <div className="form-success">{copyNotice}</div> : null}
+              <textarea readOnly className="code-output" value={generatedText} />
+            </>
+          ) : (
+            <div className="redeem-empty-result">
+              <strong>尚未生成卡密</strong>
+              <span>生成成功后会在这里显示复制和导出入口。</span>
             </div>
-            <div className="button-row">
-              <button className="secondary-action" onClick={() => copyText(generatedText, "卡密")} type="button">
-                <Copy size={16} />
-                <span>复制卡密</span>
-              </button>
-              <button className="secondary-action" onClick={() => copyText(generatedCsv, "CSV")} type="button">
-                <Copy size={16} />
-                <span>复制 CSV</span>
-              </button>
-              <button className="secondary-action" onClick={() => exportGenerated("csv")} type="button">
-                <Download size={16} />
-                <span>导出 CSV</span>
-              </button>
-              <button className="secondary-action" onClick={() => exportGenerated("txt")} type="button">
-                <Download size={16} />
-                <span>导出 TXT</span>
-              </button>
-            </div>
+          )}
+        </RedeemSubsection>
+      </RedeemStepSection>
+
+      <RedeemStepSection
+        step="3"
+        title="商品与追踪"
+        detail="维护商品配置，按批次、卡密、订单和兑换用户追踪记录。"
+        status={
+          <div className="redeem-step-badges">
+            <StatusBadge tone="neutral">{`${productRows.length} 商品`}</StatusBadge>
+            <StatusBadge tone="neutral">{`${batches.data?.total ?? 0} 批次`}</StatusBadge>
+            <StatusBadge tone="neutral">{`${codes.data?.total ?? 0} 卡密`}</StatusBadge>
           </div>
-          {generated.batch.orderRef ? <div className="batch-note-preview">联动小铺订单号：{generated.batch.orderRef}</div> : null}
-          {generated.batch.notes ? <div className="batch-note-preview">{generated.batch.notes}</div> : null}
-          {copyNotice ? <div className="form-success">{copyNotice}</div> : null}
-          <textarea readOnly className="code-output" value={generatedText} />
-        </section>
-      ) : null}
-
-      <section className="split-grid">
-        <article className="panel product-admin-panel">
-          <div className="panel-heading">
+        }
+      >
+      <section className="split-grid redeem-management-grid">
+        <article className="redeem-subsection product-admin-panel">
+          <div className="redeem-subsection-heading">
             <h3>{editingProductId ? "编辑商品" : "商品"}</h3>
-            <button className="secondary-action" onClick={resetProductForm} type="button">
+            <button className="secondary-action" onClick={startCreateProduct} type="button">
               <Plus size={16} />
               <span>新增商品</span>
             </button>
           </div>
-          <div className="preset-row">
-            {productPresets.map((preset) => (
-              <button className="secondary-action" key={preset.label} onClick={() => applyProductPreset(preset)} type="button">
-                {preset.label}
-              </button>
-            ))}
-          </div>
-          <div className="form-grid product-form">
-            <label>
-              SKU
-              <input
-                onChange={(event) => setProductForm((current) => ({ ...current, sku: event.target.value }))}
-                placeholder={editingProductId ? "必填" : "留空自动生成"}
-                value={productForm.sku}
-              />
-            </label>
-            <label>
-              商品名
-              <input
-                onChange={(event) => setProductForm((current) => ({ ...current, name: event.target.value }))}
-                placeholder="余额 $20"
-                value={productForm.name}
-              />
-            </label>
-            <label>
-              类型
-              <select
-                onChange={(event) => {
-                  const benefitType = event.target.value as ProductInput["benefitType"];
-                  const firstSubscriptionGroup = groupRows.find((group) => group.status === "active" && group.subscriptionType === "subscription");
-                  setProductForm((current) => {
-                    const currentGroup = groupRows.find((group) => group.id === current.gatewayGroupId);
-                    const subscriptionGroup = currentGroup?.subscriptionType === "subscription" ? currentGroup : firstSubscriptionGroup;
-                    return {
-                      ...current,
-                      benefitType,
-                      value: benefitType === "subscription" ? 0 : current.value || 20,
-                      validityDays: benefitType === "subscription" ? current.validityDays || 7 : 0,
-                      gatewayGroupId: benefitType === "subscription" ? subscriptionGroup?.id ?? "" : "",
-                      externalGroupId: benefitType === "subscription" ? subscriptionGroup?.externalGroupId ?? 0 : 0
-                    };
-                  });
-                }}
-                value={productForm.benefitType}
-              >
-                <option value="balance">Balance</option>
-                <option value="subscription">Subscription</option>
-              </select>
-            </label>
-            <label>
-              售价 RMB
-              <input
-                min={0}
-                onChange={(event) => setProductForm((current) => ({ ...current, priceCny: Number(event.target.value) }))}
-                type="number"
-                value={productForm.priceCny}
-              />
-            </label>
-            <label>
-              原价 RMB
-              <input
-                min={0}
-                onChange={(event) =>
-                  setProductForm((current) => ({
-                    ...current,
-                    originalPriceCny: event.target.value === "" ? null : Number(event.target.value)
-                  }))
-                }
-                placeholder="可不填"
-                type="number"
-                value={productForm.originalPriceCny ?? ""}
-              />
-            </label>
-            <label>
-              余额额度 USD
-              <input
-                disabled={productForm.benefitType === "subscription"}
-                onChange={(event) => setProductForm((current) => ({ ...current, value: Number(event.target.value) }))}
-                type="number"
-                value={productForm.value}
-              />
-            </label>
-            <label>
-              有效天数
-              <input
-                disabled={productForm.benefitType === "balance"}
-                min={0}
-                onChange={(event) => setProductForm((current) => ({ ...current, validityDays: Number(event.target.value) }))}
-                type="number"
-                value={productForm.validityDays}
-              />
-            </label>
-            <label>
-              分组
-              <select
-                onChange={(event) => {
-                  const group = gatewayGroups.data?.items.find((item) => item.id === event.target.value);
-                  setProductForm((current) => ({
-                    ...current,
-                    gatewayGroupId: event.target.value,
-                    externalGroupId: group?.externalGroupId ?? 0
-                  }));
-                }}
-                value={productForm.gatewayGroupId ?? ""}
-              >
-                <option value="">无分组</option>
-                {groupRows.map((group) => (
-                  <option key={group.id} value={group.id}>
-                    {groupOptionLabel(group)}
-                  </option>
+          <details
+            className="redeem-product-editor"
+            open={isProductEditorOpen}
+            onToggle={(event) => setProductEditorOpen(event.currentTarget.open)}
+          >
+            <summary className="redeem-collapse-summary">
+              <span>{editingProductId ? "编辑商品表单" : "新增商品表单"}</span>
+              <small>{isProductEditorOpen ? "收起" : "展开"}</small>
+            </summary>
+            <div className="redeem-product-editor-body">
+              <div className="preset-row">
+                {productPresets.map((preset) => (
+                  <button className="secondary-action" key={preset.label} onClick={() => applyProductPreset(preset)} type="button">
+                    {preset.label}
+                  </button>
                 ))}
-              </select>
-            </label>
-            <GroupGuardCard
-              benefitType={productForm.benefitType}
-              className="wide-field"
-              emptyText="余额商品可以不绑定分组或绑定 active standard 分组；订阅商品必须选择 active subscription 分组。"
-              group={productFormGroup}
-              guard={productFormGuard}
-              title="商品分组校验"
-              validityDays={productForm.validityDays}
-            />
-            <label>
-              状态
-              <select
-                onChange={(event) => setProductForm((current) => ({ ...current, status: event.target.value }))}
-                value={productForm.status}
-              >
-                <option value="active">上架 / Active</option>
-                <option value="disabled">下架 / Disabled</option>
-                <option value="archived">归档 / Archived</option>
-              </select>
-            </label>
-            <label>
-              默认来源
-              <input
-                onChange={(event) => setProductForm((current) => ({ ...current, source: event.target.value }))}
-                placeholder="ldxp / campus-a / agent-01"
-                value={productForm.source}
-              />
-              <SourcePresetButtons
-                onSelect={(value) => setProductForm((current) => ({ ...current, source: value }))}
-              />
-            </label>
-            <label>
-              排序
-              <input
-                onChange={(event) => setProductForm((current) => ({ ...current, sortOrder: Number(event.target.value) }))}
-                type="number"
-                value={productForm.sortOrder}
-              />
-            </label>
-            <label className="wide-field">
-              描述
-              <textarea
-                onChange={(event) => setProductForm((current) => ({ ...current, description: event.target.value }))}
-                placeholder="给运营看的商品说明"
-                value={productForm.description}
-              />
-            </label>
-            <label className="wide-field">
-              商品详情
-              <textarea
-                onChange={(event) => setProductForm((current) => ({ ...current, features: event.target.value }))}
-                placeholder="每行一个卖点或说明"
-                value={productForm.features}
-              />
-            </label>
-            <label className="inline-checkbox">
-              <input
-                checked={productForm.forSale}
-                onChange={(event) => setProductForm((current) => ({ ...current, forSale: event.target.checked }))}
-                type="checkbox"
-              />
-              <span>可售</span>
-            </label>
-          </div>
-          <div className="button-row product-actions">
-            <button className="primary-action" disabled={!canSaveProduct} onClick={saveProduct} type="button">
-              <Save size={16} />
-              <span>{editingProductId ? "保存修改" : "添加商品"}</span>
-            </button>
-            {editingProductId ? (
-              <button className="secondary-action" onClick={resetProductForm} type="button">
-                <X size={16} />
-                <span>取消</span>
-              </button>
-            ) : null}
-          </div>
-          {createProductMutation.isError || updateProductMutation.isError ? (
-            <div className="form-error">商品保存失败，请检查 SKU 是否重复，订阅商品是否绑定了有效分组。</div>
-          ) : null}
-          {productNotice ? <div className="form-success">{productNotice}</div> : null}
+              </div>
+              <div className="form-grid product-form">
+                <label>
+                  SKU
+                  <input
+                    onChange={(event) => setProductForm((current) => ({ ...current, sku: event.target.value }))}
+                    placeholder={editingProductId ? "必填" : "留空自动生成"}
+                    value={productForm.sku}
+                  />
+                </label>
+                <label>
+                  商品名
+                  <input
+                    onChange={(event) => setProductForm((current) => ({ ...current, name: event.target.value }))}
+                    placeholder="余额 $20"
+                    value={productForm.name}
+                  />
+                </label>
+                <label>
+                  类型
+                  <select
+                    onChange={(event) => {
+                      const benefitType = event.target.value as ProductInput["benefitType"];
+                      const firstSubscriptionGroup = groupRows.find((group) => group.status === "active" && group.subscriptionType === "subscription");
+                      setProductForm((current) => {
+                        const currentGroup = groupRows.find((group) => group.id === current.gatewayGroupId);
+                        const subscriptionGroup = currentGroup?.subscriptionType === "subscription" ? currentGroup : firstSubscriptionGroup;
+                        return {
+                          ...current,
+                          benefitType,
+                          value: benefitType === "subscription" ? 0 : current.value || 20,
+                          validityDays: benefitType === "subscription" ? current.validityDays || 7 : 0,
+                          gatewayGroupId: benefitType === "subscription" ? subscriptionGroup?.id ?? "" : "",
+                          externalGroupId: benefitType === "subscription" ? subscriptionGroup?.externalGroupId ?? 0 : 0
+                        };
+                      });
+                    }}
+                    value={productForm.benefitType}
+                  >
+                    <option value="balance">Balance</option>
+                    <option value="subscription">Subscription</option>
+                  </select>
+                </label>
+                <label>
+                  售价 RMB
+                  <input
+                    min={0}
+                    onChange={(event) => setProductForm((current) => ({ ...current, priceCny: Number(event.target.value) }))}
+                    type="number"
+                    value={productForm.priceCny}
+                  />
+                </label>
+                <label>
+                  原价 RMB
+                  <input
+                    min={0}
+                    onChange={(event) =>
+                      setProductForm((current) => ({
+                        ...current,
+                        originalPriceCny: event.target.value === "" ? null : Number(event.target.value)
+                      }))
+                    }
+                    placeholder="可不填"
+                    type="number"
+                    value={productForm.originalPriceCny ?? ""}
+                  />
+                </label>
+                <label>
+                  余额额度 USD
+                  <input
+                    disabled={productForm.benefitType === "subscription"}
+                    onChange={(event) => setProductForm((current) => ({ ...current, value: Number(event.target.value) }))}
+                    type="number"
+                    value={productForm.value}
+                  />
+                </label>
+                <label>
+                  有效天数
+                  <input
+                    disabled={productForm.benefitType === "balance"}
+                    min={0}
+                    onChange={(event) => setProductForm((current) => ({ ...current, validityDays: Number(event.target.value) }))}
+                    type="number"
+                    value={productForm.validityDays}
+                  />
+                </label>
+                <label>
+                  分组
+                  <select
+                    onChange={(event) => {
+                      const group = gatewayGroups.data?.items.find((item) => item.id === event.target.value);
+                      setProductForm((current) => ({
+                        ...current,
+                        gatewayGroupId: event.target.value,
+                        externalGroupId: group?.externalGroupId ?? 0
+                      }));
+                    }}
+                    value={productForm.gatewayGroupId ?? ""}
+                  >
+                    <option value="">无分组</option>
+                    {groupRows.map((group) => (
+                      <option key={group.id} value={group.id}>
+                        {groupOptionLabel(group)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <GroupGuardCard
+                  benefitType={productForm.benefitType}
+                  className="wide-field"
+                  emptyText="余额商品可以不绑定分组或绑定 active standard 分组；订阅商品必须选择 active subscription 分组。"
+                  group={productFormGroup}
+                  guard={productFormGuard}
+                  title="商品分组校验"
+                  validityDays={productForm.validityDays}
+                />
+                <label>
+                  状态
+                  <select
+                    onChange={(event) => setProductForm((current) => ({ ...current, status: event.target.value }))}
+                    value={productForm.status}
+                  >
+                    <option value="active">上架 / Active</option>
+                    <option value="disabled">下架 / Disabled</option>
+                    <option value="archived">归档 / Archived</option>
+                  </select>
+                </label>
+                <label>
+                  默认来源
+                  <input
+                    onChange={(event) => setProductForm((current) => ({ ...current, source: event.target.value }))}
+                    placeholder="ldxp / campus-a / agent-01"
+                    value={productForm.source}
+                  />
+                  <SourcePresetButtons
+                    onSelect={(value) => setProductForm((current) => ({ ...current, source: value }))}
+                  />
+                </label>
+                <label>
+                  排序
+                  <input
+                    onChange={(event) => setProductForm((current) => ({ ...current, sortOrder: Number(event.target.value) }))}
+                    type="number"
+                    value={productForm.sortOrder}
+                  />
+                </label>
+                <label className="wide-field">
+                  描述
+                  <textarea
+                    onChange={(event) => setProductForm((current) => ({ ...current, description: event.target.value }))}
+                    placeholder="给运营看的商品说明"
+                    value={productForm.description}
+                  />
+                </label>
+                <label className="wide-field">
+                  商品详情
+                  <textarea
+                    onChange={(event) => setProductForm((current) => ({ ...current, features: event.target.value }))}
+                    placeholder="每行一个卖点或说明"
+                    value={productForm.features}
+                  />
+                </label>
+                <label className="inline-checkbox">
+                  <input
+                    checked={productForm.forSale}
+                    onChange={(event) => setProductForm((current) => ({ ...current, forSale: event.target.checked }))}
+                    type="checkbox"
+                  />
+                  <span>可售</span>
+                </label>
+              </div>
+              <div className="button-row product-actions">
+                <button className="primary-action" disabled={!canSaveProduct} onClick={saveProduct} type="button">
+                  <Save size={16} />
+                  <span>{editingProductId ? "保存修改" : "添加商品"}</span>
+                </button>
+                {editingProductId ? (
+                  <button className="secondary-action" onClick={resetProductForm} type="button">
+                    <X size={16} />
+                    <span>取消</span>
+                  </button>
+                ) : null}
+              </div>
+              {createProductMutation.isError || updateProductMutation.isError ? (
+                <div className="form-error">商品保存失败，请检查 SKU 是否重复，订阅商品是否绑定了有效分组。</div>
+              ) : null}
+            </div>
+          </details>
           <DataTable
             rows={productRows}
             getRowKey={(row) => row.id}
@@ -1052,8 +1181,8 @@ export function RedeemCodesPage() {
             ]}
           />
         </article>
-        <article className="panel batch-admin-panel">
-          <div className="panel-heading">
+        <article className="redeem-subsection batch-admin-panel">
+          <div className="redeem-subsection-heading">
             <h3>批次</h3>
             <StatusBadge tone="neutral">{String(batches.data?.total ?? 0)}</StatusBadge>
           </div>
@@ -1209,8 +1338,8 @@ export function RedeemCodesPage() {
         </article>
       </section>
 
-      <section className="panel filter-panel">
-        <div className="panel-heading">
+      <article className="redeem-subsection redeem-code-subsection filter-panel">
+        <div className="redeem-subsection-heading">
           <h3>卡密</h3>
           <StatusBadge tone="neutral">{String(codes.data?.total ?? 0)}</StatusBadge>
         </div>
@@ -1355,11 +1484,10 @@ export function RedeemCodesPage() {
             <span>清空筛选</span>
           </button>
         </div>
-      </section>
 
-      {codes.isLoading ? <div className="panel inline-state">正在加载兑换码...</div> : null}
-      {codes.isError ? <div className="panel inline-state danger-text">兑换码加载失败。</div> : null}
-      {disableCodeMutation.isError ? <div className="panel inline-state danger-text">卡密作废失败：{disableCodeMutation.error.message}</div> : null}
+      {codes.isLoading ? <div className="inline-state">正在加载兑换码...</div> : null}
+      {codes.isError ? <div className="inline-state danger-text">兑换码加载失败。</div> : null}
+      {disableCodeMutation.isError ? <div className="inline-state danger-text">卡密作废失败：{disableCodeMutation.error.message}</div> : null}
       <DataTable
         rows={codes.data?.items ?? []}
         getRowKey={(row) => row.id}
@@ -1411,6 +1539,8 @@ export function RedeemCodesPage() {
         isFetching={codes.isFetching}
         onOffsetChange={setCodeOffset}
       />
+      </article>
+      </RedeemStepSection>
       <DangerConfirmModal
         open={Boolean(archiveProduct)}
         title="归档商品"

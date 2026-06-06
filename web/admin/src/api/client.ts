@@ -117,11 +117,22 @@ export type GatewayGroup = {
   models: GatewayGroupModel[];
   accounts: GatewayUpstreamAccount[];
   channels: GatewayChannel[];
+  officialModelConfig: GatewayGroupOfficialModelConfig;
   upstreamAccountCount: number;
   activeSchedulableAccountCount: number;
   channelCount: number;
   pricedModelCount: number;
   unpricedModelCount: number;
+};
+
+export type GatewayGroupOfficialPurposeConfig = {
+  modelIds: string[];
+  defaultModelId: string;
+};
+
+export type GatewayGroupOfficialModelConfig = {
+  embedding: GatewayGroupOfficialPurposeConfig;
+  vision: GatewayGroupOfficialPurposeConfig;
 };
 
 export type GatewayGroupModel = {
@@ -131,13 +142,28 @@ export type GatewayGroupModel = {
   modelId: string;
   displayName: string;
   providerFamily: string;
+  capabilities: string[];
   pricing: {
+    models?: string[];
+    billing_mode?: string;
     input_price?: number | null;
     output_price?: number | null;
     cache_write_price?: number | null;
     cache_read_price?: number | null;
     image_output_price?: number | null;
     per_request_price?: number | null;
+    intervals?: Array<{
+      id?: number;
+      min_tokens?: number;
+      max_tokens?: number | null;
+      tier_label?: string;
+      input_price?: number | null;
+      output_price?: number | null;
+      cache_write_price?: number | null;
+      cache_read_price?: number | null;
+      per_request_price?: number | null;
+      sort_order?: number;
+    }>;
   };
   billingMode: string;
   status: string;
@@ -1061,6 +1087,19 @@ export function syncSub2APIUsers(input: AuditReasonInput = {}) {
 
 export function getGatewayGroups() {
   return request<{ items: GatewayGroup[]; total: number }>("/api/v1/admin/gateway-groups");
+}
+
+export function updateGatewayGroupOfficialModels(
+  externalGroupId: number,
+  input: GatewayGroupOfficialModelConfig & AuditReasonInput
+) {
+  return request<{ officialModelConfig: GatewayGroupOfficialModelConfig }>(
+    `/api/v1/admin/gateway-groups/${encodeURIComponent(String(externalGroupId))}/official-models`,
+    {
+      method: "PUT",
+      body: JSON.stringify(input)
+    }
+  );
 }
 
 export function getSub2APISettings() {

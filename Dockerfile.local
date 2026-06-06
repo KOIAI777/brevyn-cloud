@@ -17,7 +17,6 @@ WORKDIR /app
 COPY --from=build /out/brevyn-api /usr/local/bin/brevyn-api
 COPY --from=build /out/brevyn-worker /usr/local/bin/brevyn-worker
 COPY web/admin/dist /app/web/admin/dist
-COPY web/app/dist /app/web/app/dist
 
 EXPOSE 4000
 

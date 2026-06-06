@@ -22,8 +22,8 @@ type Config struct {
 	AppBaseURL        string
 	AdminBaseURL      string
 	AllowedOrigins    []string
+	TrustedProxies    []string
 	AdminWebDir       string
-	AppWebDir         string
 	DeviceSoftLimit   int
 	EncryptionKey     string
 	SessionSecret     string
@@ -58,9 +58,9 @@ func Load() (*Config, error) {
 		PostgresMinConns:             getInt("POSTGRES_MIN_CONNS", 2),
 		AppBaseURL:                   getenv("APP_BASE_URL", "http://127.0.0.1:4000"),
 		AdminBaseURL:                 getenv("ADMIN_BASE_URL", "http://127.0.0.1:4000/admin"),
-		AllowedOrigins:               getCSV("CORS_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:5174,http://localhost:5174"),
+		AllowedOrigins:               getCSV("CORS_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"),
+		TrustedProxies:               getCSV("TRUSTED_PROXIES", ""),
 		AdminWebDir:                  getenv("ADMIN_WEB_DIR", "./web/admin/dist"),
-		AppWebDir:                    getenv("APP_WEB_DIR", "./web/app/dist"),
 		DeviceSoftLimit:              getInt("DEVICE_SOFT_LIMIT", 3),
 		Sub2APIBaseURL:               getenv("SUB2API_BASE_URL", "http://127.0.0.1:8080"),
 		Sub2APIAdminAPIKey:           os.Getenv("SUB2API_ADMIN_API_KEY"),
@@ -90,6 +90,10 @@ func Load() (*Config, error) {
 	}
 	cfg.Sub2APIDefaultGroupID = groupID
 
+	if err := cfg.validateDeploymentSafety(); err != nil {
+		return nil, err
+	}
+
 	if cfg.Env == "production" {
 		if err := cfg.validateProduction(); err != nil {
 			return nil, err
@@ -99,14 +103,21 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+func (c *Config) validateDeploymentSafety() error {
+	if c.Env != "production" && (isPublicHTTPURL(c.AppBaseURL) || isPublicHTTPURL(c.AdminBaseURL)) {
+		return fmt.Errorf("APP_ENV=production is required when APP_BASE_URL or ADMIN_BASE_URL is public")
+	}
+	return nil
+}
+
 func (c *Config) validateProduction() error {
 	required := map[string]string{
-		"ENCRYPTION_KEY":           c.EncryptionKey,
-		"SESSION_SECRET":           c.SessionSecret,
-		"JWT_ACCESS_SECRET":        c.JWTAccessSecret,
-		"JWT_REFRESH_SECRET":       c.JWTRefreshSecret,
-		"ADMIN_SEED_EMAIL":         c.AdminSeedEmail,
-		"ADMIN_SEED_PASSWORD":      c.AdminSeedPassword,
+		"ENCRYPTION_KEY":      c.EncryptionKey,
+		"SESSION_SECRET":      c.SessionSecret,
+		"JWT_ACCESS_SECRET":   c.JWTAccessSecret,
+		"JWT_REFRESH_SECRET":  c.JWTRefreshSecret,
+		"ADMIN_SEED_EMAIL":    c.AdminSeedEmail,
+		"ADMIN_SEED_PASSWORD": c.AdminSeedPassword,
 	}
 	for name, value := range required {
 		if strings.TrimSpace(value) == "" || value == "0" {
@@ -127,6 +138,14 @@ func (c *Config) validateProduction() error {
 			return fmt.Errorf("%s must be at least 16 characters in production", name)
 		}
 	}
+	if slicesContains(c.AllowedOrigins, "*") {
+		return fmt.Errorf("CORS_ALLOWED_ORIGINS must not contain * in production")
+	}
+	for _, origin := range c.AllowedOrigins {
+		if err := validateProductionOrigin(origin); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(c.Sub2APIAdminAPIKey) == "" &&
 		(strings.TrimSpace(c.Sub2APIAdminEmail) == "" || strings.TrimSpace(c.Sub2APIAdminPassword) == "") {
 		return fmt.Errorf("SUB2API_ADMIN_API_KEY or SUB2API_ADMIN_EMAIL/SUB2API_ADMIN_PASSWORD is required in production")
@@ -143,6 +162,21 @@ func (c *Config) validateProduction() error {
 	return nil
 }
 
+func validateProductionOrigin(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("CORS_ALLOWED_ORIGINS contains invalid origin %q", value)
+	}
+	if parsed.Scheme != "https" && !isLocalHost(parsed.Hostname()) {
+		return fmt.Errorf("CORS_ALLOWED_ORIGINS origin %q must use https in production", value)
+	}
+	return nil
+}
+
 func validateProductionPublicURL(name, value string) error {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -155,11 +189,32 @@ func validateProductionPublicURL(name, value string) error {
 	if parsed.Scheme != "https" {
 		return fmt.Errorf("%s must use https in production", name)
 	}
-	host := strings.ToLower(parsed.Hostname())
-	if host == "localhost" || host == "0.0.0.0" || host == "::1" || strings.HasPrefix(host, "127.") {
+	if isLocalHost(parsed.Hostname()) {
 		return fmt.Errorf("%s must not point to a local address in production", name)
 	}
 	return nil
+}
+
+func isPublicHTTPURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return false
+	}
+	return !isLocalHost(parsed.Hostname())
+}
+
+func isLocalHost(host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	return host == "localhost" || host == "0.0.0.0" || host == "::1" || strings.HasPrefix(host, "127.")
+}
+
+func slicesContains(values []string, target string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func isKnownDevelopmentSecret(value string) bool {

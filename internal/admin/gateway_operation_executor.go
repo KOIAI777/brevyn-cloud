@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/brevyn/brevyn-cloud/internal/config"
 	"github.com/brevyn/brevyn-cloud/internal/gateway/gatewayerror"
@@ -54,6 +55,7 @@ func (e *GatewayOperationExecutor) syncRedemption(ctx context.Context, op operat
 	if target.User.Status != "active" {
 		return nil, gatewayerror.WithStage("ensure_user", fmt.Errorf("user is not active: %s", target.User.Status))
 	}
+	defer e.handler.redeem.InvalidateGatewayEntitlementsCache(ctx, target.User.DBID)
 
 	settings, err := e.handler.redeem.LoadSub2APISettings(ctx)
 	if err != nil {
@@ -67,7 +69,11 @@ func (e *GatewayOperationExecutor) syncRedemption(ctx context.Context, op operat
 			return nil, gatewayerror.WithStage("ensure_user", err)
 		}
 	} else {
-		account, err = e.handler.redeem.SyncTargetToSub2API(ctx, target)
+		var operation string
+		account, operation, err = e.handler.redeem.SyncTargetToSub2API(ctx, target)
+		if strings.TrimSpace(operation) != "" {
+			target.GatewayOperation = operation
+		}
 		if err != nil {
 			info := gatewayerror.Classify(target.GatewayOperation, err)
 			_ = e.handler.redeem.UpdateRedemptionStatus(ctx, target.DBID, "gateway_failed", info, account.ExternalUserID, target.ExternalGroupID, target.GatewayOperation)
@@ -170,6 +176,7 @@ func (e *GatewayOperationExecutor) provisionGatewayCredential(ctx context.Contex
 	if user.Status != "active" {
 		return nil, gatewayerror.WithStage("ensure_user", fmt.Errorf("user is not active: %s", user.Status))
 	}
+	defer e.handler.redeem.InvalidateGatewayEntitlementsCache(ctx, user.DBID)
 	groupID := payload.ExternalGroupID
 	if groupID <= 0 {
 		groupID = e.handler.redeem.DefaultExternalGroupID(ctx)

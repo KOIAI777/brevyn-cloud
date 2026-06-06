@@ -93,21 +93,23 @@ type apiKeySummary struct {
 }
 
 type gatewayGroupSummary struct {
-	ExternalGroupID     int64    `json:"externalGroupId"`
-	Name                string   `json:"name"`
-	Description         string   `json:"description"`
-	Platform            string   `json:"platform"`
-	SubscriptionType    string   `json:"subscriptionType"`
-	RateMultiplier      float64  `json:"rateMultiplier"`
-	DailyLimitUSD       *float64 `json:"dailyLimitUsd,omitempty"`
-	WeeklyLimitUSD      *float64 `json:"weeklyLimitUsd,omitempty"`
-	MonthlyLimitUSD     *float64 `json:"monthlyLimitUsd,omitempty"`
-	DefaultValidityDays int      `json:"defaultValidityDays"`
-	RPMLimit            int      `json:"rpmLimit"`
-	Status              string   `json:"status"`
-	ModelCount          int      `json:"modelCount"`
-	Source              string   `json:"source,omitempty"`
-	IsCurrent           bool     `json:"isCurrent"`
+	ExternalGroupID      int64                `json:"externalGroupId"`
+	Name                 string               `json:"name"`
+	Description          string               `json:"description"`
+	Platform             string               `json:"platform"`
+	SubscriptionType     string               `json:"subscriptionType"`
+	RateMultiplier       float64              `json:"rateMultiplier"`
+	DailyLimitUSD        *float64             `json:"dailyLimitUsd,omitempty"`
+	WeeklyLimitUSD       *float64             `json:"weeklyLimitUsd,omitempty"`
+	MonthlyLimitUSD      *float64             `json:"monthlyLimitUsd,omitempty"`
+	DefaultValidityDays  int                  `json:"defaultValidityDays"`
+	RPMLimit             int                  `json:"rpmLimit"`
+	Status               string               `json:"status"`
+	ModelCount           int                  `json:"modelCount"`
+	Source               string               `json:"source,omitempty"`
+	IsCurrent            bool                 `json:"isCurrent"`
+	OfficialModelConfig  *officialModelConfig `json:"officialModelConfig,omitempty"`
+	OfficialCapabilities []string             `json:"officialCapabilities,omitempty"`
 }
 
 type modelCatalogItem struct {
@@ -251,17 +253,20 @@ func (h *Handler) Register(c *gin.Context) {
 	var gateway *gatewayAccountSummary
 	var apiKey *apiKeySummary
 	gatewayWarning := ""
+	gatewayWarningCode := ""
 	gatewayStatus := "ready"
 	gatewayOperation := ""
 	if credential, err := h.tryImmediateGatewayProvision(c.Request.Context(), user); err != nil {
-		gatewayWarning = err.Error()
+		gatewayWarningCode = safeGatewayProvisionCode(err)
+		gatewayWarning = safeGatewayProvisionMessage(gatewayWarningCode)
 		gatewayStatus = "pending"
 		if shouldQueueGatewayProvision(err) {
 			if opID, queueErr := h.enqueueGatewayProvision(c.Request.Context(), user, err); queueErr == nil {
 				gatewayOperation = opID
 			} else {
 				gatewayStatus = "failed"
-				gatewayWarning = gatewayWarning + "; queue: " + queueErr.Error()
+				gatewayWarningCode = "gateway_provision_queue_failed"
+				gatewayWarning = safeGatewayProvisionMessage(gatewayWarningCode)
 			}
 		} else {
 			gatewayStatus = "failed"
@@ -273,13 +278,14 @@ func (h *Handler) Register(c *gin.Context) {
 	}
 
 	response := gin.H{
-		"user":             user,
-		"tokens":           tokens,
-		"gateway":          gateway,
-		"apiKey":           apiKey,
-		"gatewayStatus":    gatewayStatus,
-		"gatewayOperation": gatewayOperation,
-		"gatewayWarning":   gatewayWarning,
+		"user":               user,
+		"tokens":             tokens,
+		"gateway":            gateway,
+		"apiKey":             apiKey,
+		"gatewayStatus":      gatewayStatus,
+		"gatewayOperation":   gatewayOperation,
+		"gatewayWarning":     gatewayWarning,
+		"gatewayWarningCode": gatewayWarningCode,
 	}
 	if gatewayWarning != "" {
 		c.JSON(http.StatusAccepted, response)
@@ -458,6 +464,10 @@ func (h *Handler) Me(c *gin.Context) {
 			if currentGroup.Source == "" {
 				currentGroup.Source = "default"
 			}
+			groups := []gatewayGroupSummary{*currentGroup}
+			if err := h.attachOfficialModelConfigs(c.Request.Context(), groups); err == nil {
+				currentGroup = &groups[0]
+			}
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -630,23 +640,181 @@ func (h *Handler) OfficialProvider(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "models_query_failed"})
 		return
 	}
+	legacyProvider := h.legacyOfficialAgentProvider(models, credential.PlainKey)
+	providers, err := h.officialPurposeProviders(c.Request.Context(), credentialGroupID, models, credential.PlainKey)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "official_provider_config_query_failed"})
+		return
+	}
+	if len(providers) == 0 {
+		providers = []gin.H{legacyProvider}
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"provider": gin.H{
-			"purpose":       "agent",
-			"providerKind":  "custom-anthropic",
-			"adapterKind":   "anthropic",
-			"protocol":      "anthropic_messages",
-			"name":          "Brevyn Official",
+		"provider":  legacyProvider,
+		"providers": providers,
+		"gateway":   gatewayAccountResponse(credential.Account),
+		"apiKey":    gatewayAPIKeyPointerResponse(credential.APIKey),
+	})
+}
+
+func (h *Handler) legacyOfficialAgentProvider(models []modelCatalogItem, apiKey string) gin.H {
+	return gin.H{
+		"purpose":       "agent",
+		"providerKind":  "custom-anthropic",
+		"adapterKind":   "anthropic",
+		"protocol":      "anthropic_messages",
+		"name":          "Brevyn Official",
+		"baseUrl":       h.cfg.OfficialProviderBaseURL,
+		"authMode":      "api_key",
+		"apiKey":        apiKey,
+		"selectedModel": h.selectProviderModel(models),
+		"enabled":       true,
+		"models":        models,
+	}
+}
+
+type officialPurposeConfig struct {
+	ModelIDs       []string `json:"modelIds"`
+	DefaultModelID string   `json:"defaultModelId"`
+}
+
+type officialModelConfig struct {
+	Embedding officialPurposeConfig `json:"embedding"`
+	Vision    officialPurposeConfig `json:"vision"`
+}
+
+func (h *Handler) officialPurposeProviders(ctx context.Context, externalGroupID int64, models []modelCatalogItem, apiKey string) ([]gin.H, error) {
+	configs, err := h.officialPurposeConfigs(ctx, externalGroupID)
+	if err != nil {
+		return nil, err
+	}
+	if len(configs) == 0 {
+		return nil, nil
+	}
+	providers := []gin.H{}
+	if config, ok := configs["embedding"]; ok {
+		if provider := h.officialPurposeProvider("embedding", config, models, apiKey); provider != nil {
+			providers = append(providers, provider)
+		}
+	}
+	if config, ok := configs["vision"]; ok {
+		if provider := h.officialPurposeProvider("vision", config, models, apiKey); provider != nil {
+			providers = append(providers, provider)
+		}
+	}
+	return providers, nil
+}
+
+func (h *Handler) officialPurposeConfigs(ctx context.Context, externalGroupID int64) (map[string]officialPurposeConfig, error) {
+	rows, err := h.postgres.Query(ctx, `
+		SELECT purpose, model_id, is_default
+		FROM gateway_group_model_roles
+		WHERE provider = 'sub2api' AND external_group_id = $1
+			AND enabled = true AND purpose = ANY($2::text[])
+		ORDER BY purpose ASC, sort_order ASC, model_id ASC
+	`, externalGroupID, []string{"embedding", "vision"})
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	configs := map[string]officialPurposeConfig{}
+	for rows.Next() {
+		var purpose string
+		var modelID string
+		var isDefault bool
+		if err := rows.Scan(&purpose, &modelID, &isDefault); err != nil {
+			return nil, err
+		}
+		config := configs[purpose]
+		config.ModelIDs = append(config.ModelIDs, modelID)
+		if isDefault {
+			config.DefaultModelID = modelID
+		}
+		configs[purpose] = config
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for purpose, config := range configs {
+		config.DefaultModelID = selectedConfiguredModel(config.DefaultModelID, config.ModelIDs)
+		configs[purpose] = config
+	}
+	return configs, nil
+}
+
+func (h *Handler) officialPurposeProvider(purpose string, config officialPurposeConfig, allModels []modelCatalogItem, apiKey string) gin.H {
+	models := configuredPurposeModels(config.ModelIDs, allModels)
+	if len(models) == 0 {
+		return nil
+	}
+	selectedModel := selectedConfiguredModel(config.DefaultModelID, modelIDsFromCatalog(models))
+	switch purpose {
+	case "embedding":
+		return gin.H{
+			"purpose":       "embedding",
+			"providerKind":  "custom-openai",
+			"adapterKind":   "openai_embedding",
+			"protocol":      "openai_compatible",
+			"name":          "Brevyn Official Embedding",
 			"baseUrl":       h.cfg.OfficialProviderBaseURL,
-			"authMode":      "api_key",
-			"apiKey":        credential.PlainKey,
-			"selectedModel": h.selectProviderModel(models),
+			"authMode":      "bearer",
+			"apiKey":        apiKey,
+			"selectedModel": selectedModel,
 			"enabled":       true,
 			"models":        models,
-		},
-		"gateway": gatewayAccountResponse(credential.Account),
-		"apiKey":  gatewayAPIKeyPointerResponse(credential.APIKey),
-	})
+		}
+	case "vision":
+		return gin.H{
+			"purpose":       "vision",
+			"providerKind":  "vision-custom-openai",
+			"adapterKind":   "openai_chat_completions",
+			"protocol":      "openai_compatible",
+			"name":          "Brevyn Official Vision",
+			"baseUrl":       h.cfg.OfficialProviderBaseURL,
+			"authMode":      "bearer",
+			"apiKey":        apiKey,
+			"selectedModel": selectedModel,
+			"enabled":       true,
+			"models":        models,
+		}
+	default:
+		return nil
+	}
+}
+
+func configuredPurposeModels(modelIDs []string, allModels []modelCatalogItem) []modelCatalogItem {
+	byID := map[string]modelCatalogItem{}
+	for _, model := range allModels {
+		byID[strings.ToLower(model.ID)] = model
+	}
+	models := []modelCatalogItem{}
+	for _, modelID := range modelIDs {
+		if model, ok := byID[strings.ToLower(modelID)]; ok {
+			models = append(models, model)
+		}
+	}
+	return models
+}
+
+func modelIDsFromCatalog(models []modelCatalogItem) []string {
+	ids := make([]string, 0, len(models))
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	return ids
+}
+
+func selectedConfiguredModel(selected string, modelIDs []string) string {
+	selected = strings.TrimSpace(selected)
+	for _, modelID := range modelIDs {
+		if strings.EqualFold(modelID, selected) {
+			return modelID
+		}
+	}
+	if len(modelIDs) > 0 {
+		return modelIDs[0]
+	}
+	return selected
 }
 
 func (h *Handler) ModelCatalog(c *gin.Context) {
@@ -857,7 +1025,97 @@ func (h *Handler) userGatewayGroups(ctx context.Context, userID int64, currentGr
 		group.IsCurrent = group.ExternalGroupID == currentGroupID
 		groups = append(groups, group)
 	}
-	return groups, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := h.attachOfficialModelConfigs(ctx, groups); err != nil {
+		return nil, err
+	}
+	return groups, nil
+}
+
+func (h *Handler) attachOfficialModelConfigs(ctx context.Context, groups []gatewayGroupSummary) error {
+	if len(groups) == 0 {
+		return nil
+	}
+	groupIDs := []int64{}
+	seen := map[int64]struct{}{}
+	for _, group := range groups {
+		if group.ExternalGroupID <= 0 {
+			continue
+		}
+		if _, exists := seen[group.ExternalGroupID]; exists {
+			continue
+		}
+		seen[group.ExternalGroupID] = struct{}{}
+		groupIDs = append(groupIDs, group.ExternalGroupID)
+	}
+	if len(groupIDs) == 0 {
+		return nil
+	}
+	rows, err := h.postgres.Query(ctx, `
+		SELECT external_group_id, purpose, model_id, is_default
+		FROM gateway_group_model_roles
+		WHERE provider = 'sub2api'
+			AND external_group_id = ANY($1::bigint[])
+			AND enabled = true
+			AND purpose = ANY($2::text[])
+		ORDER BY external_group_id ASC, purpose ASC, sort_order ASC, model_id ASC
+	`, groupIDs, []string{"embedding", "vision"})
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	configs := map[int64]officialModelConfig{}
+	for rows.Next() {
+		var externalGroupID int64
+		var purpose string
+		var modelID string
+		var isDefault bool
+		if err := rows.Scan(&externalGroupID, &purpose, &modelID, &isDefault); err != nil {
+			return err
+		}
+		config := configs[externalGroupID]
+		switch purpose {
+		case "embedding":
+			config.Embedding.ModelIDs = append(config.Embedding.ModelIDs, modelID)
+			if isDefault {
+				config.Embedding.DefaultModelID = modelID
+			}
+		case "vision":
+			config.Vision.ModelIDs = append(config.Vision.ModelIDs, modelID)
+			if isDefault {
+				config.Vision.DefaultModelID = modelID
+			}
+		}
+		configs[externalGroupID] = config
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	for index := range groups {
+		config, ok := configs[groups[index].ExternalGroupID]
+		if !ok {
+			continue
+		}
+		config.Embedding.DefaultModelID = selectedConfiguredModel(config.Embedding.DefaultModelID, config.Embedding.ModelIDs)
+		config.Vision.DefaultModelID = selectedConfiguredModel(config.Vision.DefaultModelID, config.Vision.ModelIDs)
+		capabilities := []string{}
+		if len(config.Embedding.ModelIDs) > 0 {
+			capabilities = append(capabilities, "embedding")
+		}
+		if len(config.Vision.ModelIDs) > 0 {
+			capabilities = append(capabilities, "vision")
+		}
+		if len(capabilities) == 0 {
+			continue
+		}
+		groups[index].OfficialModelConfig = &config
+		groups[index].OfficialCapabilities = capabilities
+	}
+	return nil
 }
 
 func (h *Handler) userOwnsExternalGroup(ctx context.Context, userID int64, externalGroupID int64) (bool, error) {
@@ -1309,7 +1567,8 @@ func writeOfficialGatewayCredentialError(c *gin.Context, err error) {
 		if credentialErr.RetryAfter > 0 {
 			setRetryAfter(c, credentialErr.RetryAfter)
 		}
-		payload := gin.H{"error": credentialErr.Code, "detail": credentialErr.Error()}
+		code := safeGatewayProvisionCode(err)
+		payload := gin.H{"error": code, "detail": safeGatewayProvisionMessage(code)}
 		if credentialErr.Status == http.StatusAccepted {
 			payload["status"] = "provisioning"
 			if credentialErr.RetryAfter > 0 {
@@ -1320,6 +1579,42 @@ func writeOfficialGatewayCredentialError(c *gin.Context, err error) {
 		return
 	}
 	c.JSON(http.StatusInternalServerError, gin.H{"error": "official_gateway_credential_failed"})
+}
+
+func safeGatewayProvisionCode(err error) string {
+	var credentialErr officialGatewayCredentialError
+	if errors.As(err, &credentialErr) && strings.TrimSpace(credentialErr.Code) != "" {
+		return credentialErr.Code
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "gateway_provision_timeout"
+	}
+	return "gateway_provision_failed"
+}
+
+func safeGatewayProvisionMessage(code string) string {
+	switch strings.TrimSpace(code) {
+	case "gateway_provision_busy", "gateway_credential_missing":
+		return "官方配置正在准备中，请稍后刷新"
+	case "gateway_provision_timeout":
+		return "官方配置同步超时，请稍后刷新"
+	case "gateway_account_sync_failed", "gateway_key_sync_failed":
+		return "官方配置同步失败，请稍后重试或联系支持"
+	case "gateway_provision_queue_failed":
+		return "官方配置后台同步入队失败，请联系支持"
+	case "default_gateway_group_not_configured":
+		return "官方网关默认分组未配置，请联系支持"
+	case "invalid_external_group_id":
+		return "分组 ID 不正确"
+	case "group_not_available":
+		return "当前账号无权使用该分组"
+	case "group_permission_query_failed":
+		return "暂时无法校验分组权限，请稍后重试"
+	case "gateway_credential_query_failed":
+		return "官方配置暂时不可用，请稍后重试"
+	default:
+		return "官方配置暂时不可用，请稍后重试"
+	}
 }
 
 func (h *Handler) Redeem(c *gin.Context) {
@@ -1373,13 +1668,18 @@ func (h *Handler) Redeem(c *gin.Context) {
 		writeAuthAPIError(c, http.StatusInternalServerError, "redeem_failed", "兑换失败，请稍后再试")
 		return
 	}
+	defer h.invalidateGatewayEntitlementsCache(c.Request.Context(), user.ID)
 
 	result, syncErr := h.syncRedemptionToGateway(c.Request.Context(), user, pending)
 	if syncErr != nil {
-		errInfo := gatewayerror.Classify(pending.GatewayOperation, syncErr)
+		operation := strings.TrimSpace(result.Redemption.GatewayOperation)
+		if operation == "" {
+			operation = pending.GatewayOperation
+		}
+		errInfo := gatewayerror.Classify(operation, syncErr)
 		_ = h.incrementGatewayOperationAttempt(c.Request.Context(), pending.OperationPublic)
 		_ = operations.MarkFailed(c.Request.Context(), h.postgres, pending.OperationPublic, errInfo, time.Now().UTC().Add(operations.Backoff(1)), !errInfo.Retryable)
-		_ = h.gatewaySync.UpdateRedemptionStatus(c.Request.Context(), pending.RedemptionDBID, "gateway_failed", errInfo, 0, pending.ExternalGroupID, pending.GatewayOperation)
+		_ = h.gatewaySync.UpdateRedemptionStatus(c.Request.Context(), pending.RedemptionDBID, "gateway_failed", errInfo, result.Redemption.ExternalUserID, pending.ExternalGroupID, operation)
 		result.Redemption.Status = "gateway_failed"
 		result.Redemption = applyRedemptionErrorInfo(result.Redemption, errInfo)
 		c.JSON(http.StatusAccepted, gin.H{
@@ -2187,12 +2487,18 @@ func (h *Handler) syncRedemptionToGateway(ctx context.Context, user Principal, p
 		ProductName:      pending.ProductName,
 		CreatedAt:        pending.CreatedAt,
 	}
-	account, err := h.gatewaySync.SyncTargetToSub2API(ctx, target)
+	account, operation, err := h.gatewaySync.SyncTargetToSub2API(ctx, target)
+	if strings.TrimSpace(operation) != "" {
+		pending.GatewayOperation = operation
+		result.Redemption.GatewayOperation = operation
+	}
+	if account.ExternalUserID > 0 {
+		result.Gateway = gatewayAccountResponse(account)
+		result.Redemption.ExternalUserID = account.ExternalUserID
+	}
 	if err != nil {
 		return result, err
 	}
-	result.Gateway = gatewayAccountResponse(account)
-	result.Redemption.ExternalUserID = account.ExternalUserID
 
 	settings, err := h.gatewaySync.LoadSub2APISettings(ctx)
 	if err != nil {

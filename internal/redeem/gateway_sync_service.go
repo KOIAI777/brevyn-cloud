@@ -160,6 +160,18 @@ func NewGatewaySyncService(cfg *config.Config, postgres *pgxpool.Pool, redisClie
 	return &GatewaySyncService{cfg: cfg, postgres: postgres, redis: redisClient}
 }
 
+func (s *GatewaySyncService) InvalidateGatewayEntitlementsCache(ctx context.Context, userID int64) {
+	if s == nil || s.redis == nil || userID <= 0 {
+		return
+	}
+	userIDText := strconv.FormatInt(userID, 10)
+	_ = s.redis.Del(ctx,
+		"brevyn:gateway-entitlements:"+userIDText,
+		"brevyn:gateway-entitlements:stale:"+userIDText,
+		"brevyn:gateway-entitlements:force:"+userIDText,
+	).Err()
+}
+
 func (s *GatewaySyncService) LoadSyncTarget(ctx context.Context, publicID string) (SyncTarget, error) {
 	var target SyncTarget
 	err := s.postgres.QueryRow(ctx, `
@@ -217,44 +229,105 @@ func (s *GatewaySyncService) LoadSyncTarget(ctx context.Context, publicID string
 	return target, nil
 }
 
-func (s *GatewaySyncService) SyncTargetToSub2API(ctx context.Context, target SyncTarget) (GatewayAccountSummary, error) {
+func (s *GatewaySyncService) SyncTargetToSub2API(ctx context.Context, target SyncTarget) (GatewayAccountSummary, string, error) {
+	operation := normalizedGatewayOperation(target)
 	if target.Kind != "balance" && target.Kind != "subscription" {
-		return GatewayAccountSummary{}, fmt.Errorf("unsupported redeem kind %s", target.Kind)
+		return GatewayAccountSummary{}, operation, fmt.Errorf("unsupported redeem kind %s", target.Kind)
 	}
 	if target.Kind == "subscription" && (target.ExternalGroupID == 0 || target.ValidityDays <= 0) {
-		return GatewayAccountSummary{}, fmt.Errorf("subscription redemption is missing group or validity")
+		return GatewayAccountSummary{}, operation, fmt.Errorf("subscription redemption is missing group or validity")
 	}
 
 	settings, err := s.LoadSub2APISettings(ctx)
 	if err != nil {
-		return GatewayAccountSummary{}, gatewayerror.WithStage("settings", err)
+		return GatewayAccountSummary{}, operation, gatewayerror.WithStage("settings", err)
 	}
 	client := s.NewSub2APIClient(settings)
 	account, err := s.EnsureSub2APIAccountForGroup(ctx, client, target.User, target.ExternalGroupID)
 	if err != nil {
-		return GatewayAccountSummary{}, gatewayerror.WithStage("ensure_user", err)
+		return GatewayAccountSummary{}, operation, gatewayerror.WithStage("ensure_user", err)
 	}
 
 	idempotencyKey := "brevyn-" + target.PublicID
 	switch target.Kind {
 	case "balance":
+		operation = "add_balance"
 		err = client.UpdateUserBalance(ctx, account.ExternalUserID, sub2api.BalanceRequest{
 			Balance:   target.Value,
 			Operation: "add",
 			Notes:     "Brevyn retry " + target.PublicID,
 		}, idempotencyKey)
 	case "subscription":
-		err = client.AssignSubscriptionWithIdempotency(ctx, sub2api.AssignSubscriptionRequest{
-			UserID:       account.ExternalUserID,
-			GroupID:      target.ExternalGroupID,
-			ValidityDays: target.ValidityDays,
-			Notes:        "Brevyn retry " + target.PublicID,
-		}, idempotencyKey)
+		operation, err = syncSub2APISubscription(ctx, client, account.ExternalUserID, target, idempotencyKey)
 	}
 	if err != nil {
-		return account, gatewayerror.WithStage(target.GatewayOperation, err)
+		return account, operation, gatewayerror.WithStage(operation, err)
 	}
-	return account, nil
+	return account, operation, nil
+}
+
+func normalizedGatewayOperation(target SyncTarget) string {
+	operation := strings.TrimSpace(target.GatewayOperation)
+	if operation != "" {
+		return operation
+	}
+	switch target.Kind {
+	case "balance":
+		return "add_balance"
+	case "subscription":
+		return "assign_subscription"
+	default:
+		return "gateway"
+	}
+}
+
+func syncSub2APISubscription(ctx context.Context, client *sub2api.Client, externalUserID int64, target SyncTarget, idempotencyKey string) (string, error) {
+	subscription, found, err := findRenewableSub2APISubscription(ctx, client, externalUserID, target.ExternalGroupID)
+	if err != nil {
+		return "lookup_subscription", err
+	}
+	if found {
+		_, err := client.ExtendSubscription(ctx, subscription.ID, sub2api.ExtendSubscriptionRequest{
+			Days: target.ValidityDays,
+		}, idempotencyKey)
+		return "extend_subscription", err
+	}
+	err = client.AssignSubscriptionWithIdempotency(ctx, sub2api.AssignSubscriptionRequest{
+		UserID:       externalUserID,
+		GroupID:      target.ExternalGroupID,
+		ValidityDays: target.ValidityDays,
+		Notes:        "Brevyn retry " + target.PublicID,
+	}, idempotencyKey)
+	return "assign_subscription", err
+}
+
+func findRenewableSub2APISubscription(ctx context.Context, client *sub2api.Client, externalUserID, externalGroupID int64) (sub2api.AdminSubscription, bool, error) {
+	subscriptions, _, err := client.ListSubscriptions(ctx, sub2api.SubscriptionListFilter{
+		Page:      1,
+		PageSize:  20,
+		UserID:    externalUserID,
+		GroupID:   externalGroupID,
+		SortBy:    "expires_at",
+		SortOrder: "desc",
+	})
+	if err != nil {
+		return sub2api.AdminSubscription{}, false, err
+	}
+	if len(subscriptions) == 0 {
+		return sub2api.AdminSubscription{}, false, nil
+	}
+
+	latest := subscriptions[0]
+	for _, subscription := range subscriptions[1:] {
+		if subscription.ExpiresAt.After(latest.ExpiresAt) {
+			latest = subscription
+			continue
+		}
+		if subscription.ExpiresAt.Equal(latest.ExpiresAt) && subscription.ID > latest.ID {
+			latest = subscription
+		}
+	}
+	return latest, true, nil
 }
 
 func (s *GatewaySyncService) EnsureSub2APIAccount(ctx context.Context, client *sub2api.Client, user GatewayUser, defaultGroupID int64) (GatewayAccountSummary, error) {

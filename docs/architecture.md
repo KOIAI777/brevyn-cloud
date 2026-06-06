@@ -271,9 +271,6 @@ internal/gateway/operations
 internal/gateway/gatewayerror
   Gateway error classifier and retryability policy.
 
-internal/providers
-  Official provider config returned to the Brevyn app.
-
 internal/platform
   PostgreSQL, Redis, schema bootstrap.
 ```
@@ -845,7 +842,6 @@ internal/auth
 internal/users
 internal/sessions
 internal/devices
-internal/providers
 internal/gateway
 internal/products
 internal/billing
@@ -873,11 +869,9 @@ internal/sessions:
 internal/devices:
   Device registration, device-bound gateway keys, revocation.
 
-internal/providers:
-  Model catalog, capabilities, public visibility, provider families, route policies.
-
 internal/gateway:
-  Adapter over sub2api today, Brevyn Gateway tomorrow.
+  Adapter over sub2api today, Brevyn Gateway tomorrow. Also owns gateway-facing
+  model/group snapshots and route metadata used by the app.
 
 internal/products:
   Balance packages, weekly plans, monthly plans, pricing rules.
@@ -1668,7 +1662,6 @@ Ent schema and migrations
 internal/auth
 internal/admin with role guards
 internal/devices
-internal/providers
 internal/gateway with Sub2apiGatewayAdapter
 internal/redeem
 Balance endpoint

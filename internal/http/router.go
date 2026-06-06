@@ -13,16 +13,14 @@ import (
 	"github.com/brevyn/brevyn-cloud/internal/auth"
 	"github.com/brevyn/brevyn-cloud/internal/config"
 	"github.com/brevyn/brevyn-cloud/internal/health"
-	"github.com/brevyn/brevyn-cloud/internal/providers"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
 type Dependencies struct {
-	Health    *health.Handler
-	Admin     *admin.Handler
-	Auth      *auth.Handler
-	Providers *providers.Handler
+	Health *health.Handler
+	Admin  *admin.Handler
+	Auth   *auth.Handler
 }
 
 func NewRouter(cfg *config.Config, logger *slog.Logger, deps Dependencies) http.Handler {
@@ -31,9 +29,13 @@ func NewRouter(cfg *config.Config, logger *slog.Logger, deps Dependencies) http.
 	}
 
 	router := gin.New()
+	if err := router.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		panic("invalid TRUSTED_PROXIES: " + err.Error())
+	}
 	router.Use(requestID())
 	router.Use(gin.Recovery())
 	router.Use(accessLog(logger))
+	router.Use(securityHeaders())
 	router.Use(cors(cfg.AllowedOrigins))
 
 	router.GET("/healthz", deps.Health.Liveness)
@@ -103,6 +105,7 @@ func NewRouter(cfg *config.Config, logger *slog.Logger, deps Dependencies) http.
 				protectedAdminRoutes.POST("/sub2api/sync-models", deps.Admin.SyncSub2APIModels)
 				protectedAdminRoutes.GET("/gateway-groups", deps.Admin.ListGatewayGroups)
 				protectedAdminRoutes.POST("/gateway-groups", deps.Admin.CreateGatewayGroup)
+				protectedAdminRoutes.PUT("/gateway-groups/:externalGroupId/official-models", deps.Admin.UpdateGatewayGroupOfficialModels)
 				protectedAdminRoutes.GET("/products", deps.Admin.ListProducts)
 				protectedAdminRoutes.POST("/products", deps.Admin.CreateProduct)
 				protectedAdminRoutes.PUT("/products/:id", deps.Admin.UpdateProduct)
@@ -134,13 +137,6 @@ func NewRouter(cfg *config.Config, logger *slog.Logger, deps Dependencies) http.
 		router.GET("/admin/*filepath", serveStaticWeb(cfg.AdminWebDir))
 		router.HEAD("/admin", serveStaticWeb(cfg.AdminWebDir))
 		router.HEAD("/admin/*filepath", serveStaticWeb(cfg.AdminWebDir))
-	}
-
-	if _, err := os.Stat(filepath.Join(cfg.AppWebDir, "index.html")); err == nil {
-		router.GET("/app", serveStaticWeb(cfg.AppWebDir))
-		router.GET("/app/*filepath", serveStaticWeb(cfg.AppWebDir))
-		router.HEAD("/app", serveStaticWeb(cfg.AppWebDir))
-		router.HEAD("/app/*filepath", serveStaticWeb(cfg.AppWebDir))
 	}
 
 	return router
@@ -196,10 +192,24 @@ func accessLog(logger *slog.Logger) gin.HandlerFunc {
 	}
 }
 
+func securityHeaders() gin.HandlerFunc {
+	const csp = "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; " +
+		"script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; " +
+		"connect-src 'self'; form-action 'self'"
+	return func(c *gin.Context) {
+		c.Header("Content-Security-Policy", csp)
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		c.Next()
+	}
+}
+
 func cors(allowedOrigins []string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		origin := c.GetHeader("Origin")
-		if origin != "" && (slices.Contains(allowedOrigins, origin) || slices.Contains(allowedOrigins, "*")) {
+		if origin != "" && slices.Contains(allowedOrigins, origin) {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Vary", "Origin")
 			c.Header("Access-Control-Allow-Credentials", "true")

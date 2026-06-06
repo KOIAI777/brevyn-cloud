@@ -20,16 +20,6 @@ RUN npm ci
 COPY web/admin/ ./
 RUN npm run build
 
-FROM node:22-alpine AS app-web-build
-
-WORKDIR /src/web/app
-
-COPY web/app/package.json web/app/package-lock.json ./
-RUN npm ci
-
-COPY web/app/ ./
-RUN npm run build
-
 FROM alpine:3.20
 
 WORKDIR /app
@@ -39,7 +29,6 @@ RUN apk add --no-cache ca-certificates tzdata
 COPY --from=build /out/brevyn-api /usr/local/bin/brevyn-api
 COPY --from=build /out/brevyn-worker /usr/local/bin/brevyn-worker
 COPY --from=admin-web-build /src/web/admin/dist /app/web/admin/dist
-COPY --from=app-web-build /src/web/app/dist /app/web/app/dist
 
 EXPOSE 4000
 

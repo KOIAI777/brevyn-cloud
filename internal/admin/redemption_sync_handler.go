@@ -73,7 +73,10 @@ func (h *Handler) RetryRedemptionSync(c *gin.Context) {
 	syncCtx, cancel := context.WithTimeout(c.Request.Context(), 45*time.Second)
 	defer cancel()
 
-	account, syncErr := h.redeem.SyncTargetToSub2API(syncCtx, target)
+	account, operation, syncErr := h.redeem.SyncTargetToSub2API(syncCtx, target)
+	if strings.TrimSpace(operation) != "" {
+		target.GatewayOperation = operation
+	}
 	if syncErr != nil {
 		errInfo := gatewayerror.Classify(target.GatewayOperation, syncErr)
 		_ = operations.MarkFailed(c.Request.Context(), h.postgres, operationID, errInfo, time.Now().UTC().Add(operations.Backoff(1)), !errInfo.Retryable)

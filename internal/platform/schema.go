@@ -261,6 +261,20 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			UNIQUE(provider, external_group_id, platform, model_id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS gateway_group_model_roles (
+			id BIGSERIAL PRIMARY KEY,
+			public_id TEXT NOT NULL UNIQUE,
+			provider TEXT NOT NULL DEFAULT 'sub2api',
+			external_group_id BIGINT NOT NULL DEFAULT 0,
+			purpose TEXT NOT NULL,
+			model_id TEXT NOT NULL,
+			enabled BOOLEAN NOT NULL DEFAULT true,
+			is_default BOOLEAN NOT NULL DEFAULT false,
+			sort_order INT NOT NULL DEFAULT 0,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			UNIQUE(provider, external_group_id, purpose, model_id)
+		)`,
 		`CREATE TABLE IF NOT EXISTS products (
 			id BIGSERIAL PRIMARY KEY,
 			public_id TEXT NOT NULL UNIQUE,
@@ -451,6 +465,10 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 		`CREATE INDEX IF NOT EXISTS idx_gateway_upstream_accounts_platform ON gateway_upstream_accounts(platform)`,
 		`CREATE INDEX IF NOT EXISTS idx_gateway_group_models_group ON gateway_group_models(provider, external_group_id, status)`,
 		`CREATE INDEX IF NOT EXISTS idx_gateway_group_models_model ON gateway_group_models(model_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_gateway_group_model_roles_group ON gateway_group_model_roles(provider, external_group_id, purpose, enabled)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_gateway_group_model_roles_default
+			ON gateway_group_model_roles(provider, external_group_id, purpose)
+			WHERE enabled = true AND is_default = true`,
 		`CREATE INDEX IF NOT EXISTS idx_products_benefit_type ON products(benefit_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_products_for_sale ON products(for_sale)`,
 		`CREATE INDEX IF NOT EXISTS idx_products_gateway_group_id ON products(gateway_group_id)`,

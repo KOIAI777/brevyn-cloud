@@ -282,7 +282,6 @@ internal/auth
 internal/sessions
 internal/devices
 internal/gateway
-internal/providers
 internal/redeem
 internal/usage
 internal/admin
