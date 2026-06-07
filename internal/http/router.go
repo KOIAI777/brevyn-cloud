@@ -3,6 +3,7 @@ package httpapi
 import (
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -37,6 +38,7 @@ func NewRouter(cfg *config.Config, logger *slog.Logger, deps Dependencies) http.
 	router.Use(accessLog(logger))
 	router.Use(securityHeaders())
 	router.Use(cors(cfg.AllowedOrigins))
+	router.Use(adminOriginGuard(cfg))
 
 	router.GET("/healthz", deps.Health.Liveness)
 	router.GET("/readyz", deps.Health.Readiness)
@@ -228,7 +230,7 @@ func cors(allowedOrigins []string) gin.HandlerFunc {
 			c.Header("Access-Control-Allow-Origin", origin)
 			c.Header("Vary", "Origin")
 			c.Header("Access-Control-Allow-Credentials", "true")
-			c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id")
+			c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Request-Id, Idempotency-Key")
 			c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		}
 		if c.Request.Method == http.MethodOptions {
@@ -237,4 +239,90 @@ func cors(allowedOrigins []string) gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+func adminOriginGuard(cfg *config.Config) gin.HandlerFunc {
+	allowed := adminAllowedOrigins(cfg)
+	return func(c *gin.Context) {
+		if !strings.HasPrefix(c.Request.URL.Path, "/api/v1/admin") || !isUnsafeMethod(c.Request.Method) {
+			c.Next()
+			return
+		}
+
+		origin := strings.TrimSpace(c.GetHeader("Origin"))
+		if origin == "" {
+			c.Next()
+			return
+		}
+		if allowed["*"] || allowed[canonicalOrigin(origin)] || canonicalOrigin(origin) == requestOrigin(c.Request) {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "admin_origin_forbidden"})
+	}
+}
+
+func adminAllowedOrigins(cfg *config.Config) map[string]bool {
+	allowed := make(map[string]bool)
+	for _, origin := range cfg.AdminAllowedOrigins {
+		origin = canonicalOrigin(origin)
+		if origin != "" {
+			allowed[origin] = true
+		}
+	}
+	for _, rawURL := range []string{cfg.AdminBaseURL} {
+		origin := originFromURL(rawURL)
+		if origin != "" {
+			allowed[origin] = true
+		}
+	}
+	return allowed
+}
+
+func isUnsafeMethod(method string) bool {
+	switch method {
+	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
+		return true
+	default:
+		return false
+	}
+}
+
+func canonicalOrigin(origin string) string {
+	origin = strings.TrimRight(strings.TrimSpace(origin), "/")
+	if origin == "*" {
+		return origin
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host)
+}
+
+func originFromURL(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	return strings.ToLower(parsed.Scheme) + "://" + strings.ToLower(parsed.Host)
+}
+
+func requestOrigin(req *http.Request) string {
+	scheme := "http"
+	if forwardedProto := firstHeaderValue(req.Header.Get("X-Forwarded-Proto")); forwardedProto != "" {
+		scheme = strings.ToLower(forwardedProto)
+	} else if req.TLS != nil {
+		scheme = "https"
+	}
+	host := strings.ToLower(strings.TrimSpace(req.Host))
+	return scheme + "://" + host
+}
+
+func firstHeaderValue(value string) string {
+	value = strings.TrimSpace(value)
+	if comma := strings.Index(value, ","); comma >= 0 {
+		value = strings.TrimSpace(value[:comma])
+	}
+	return value
 }

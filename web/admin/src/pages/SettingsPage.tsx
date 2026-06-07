@@ -63,6 +63,35 @@ type SettingsForm = {
 
 type SettingsSection = "connection" | "capabilities" | "security" | "backup" | "sync";
 
+const officialCapabilityProtocolPresets = [
+  {
+    id: "openai_compatible",
+    label: "OpenAI-compatible",
+    description: "适合 Sub2API / Gitee / OpenAI 风格的 chat/completions。适合图片视觉；PDF 文档解析需要单独 adapter。",
+    protocol: "openai_compatible",
+    providerKindByPurpose: { embedding: "custom-openai", vision: "vision-custom-openai", ocr: "ocr-custom-openai" },
+    adapterKindByPurpose: { embedding: "openai_embedding", vision: "openai_chat_completions", ocr: "openai_chat_completions" }
+  },
+  {
+    id: "anthropic_messages",
+    label: "Anthropic Messages",
+    description: "适合 Claude/Anthropic Messages 风格接口。可用于支持 document block 的视觉/OCR 能力。",
+    protocol: "anthropic_messages",
+    providerKindByPurpose: { agent: "custom-anthropic", vision: "vision-custom-anthropic", ocr: "ocr-custom-anthropic" },
+    adapterKindByPurpose: { agent: "anthropic", vision: "anthropic", ocr: "anthropic" }
+  },
+  {
+    id: "openai_responses",
+    label: "OpenAI Responses",
+    description: "适合 OpenAI Responses API。可用于支持 input_file/input_image 的新式多模态能力。",
+    protocol: "openai_responses",
+    providerKindByPurpose: { agent: "openai-responses-agent", vision: "vision-openai-responses", ocr: "ocr-openai-responses" },
+    adapterKindByPurpose: { agent: "openai_responses", vision: "openai_responses", ocr: "openai_responses" }
+  }
+] as const;
+
+const customOfficialCapabilityProtocolPresetId = "custom";
+
 function authModeLabel(mode: string) {
   if (mode === "admin_api_key") return "API Key";
   if (mode === "admin_credentials") return "管理员账号";
@@ -542,6 +571,22 @@ function OfficialCapabilitiesPanel() {
     setDrafts((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item));
   };
 
+  const updateProtocolPreset = (index: number, presetId: string) => {
+    if (presetId === customOfficialCapabilityProtocolPresetId) return;
+    const preset = officialCapabilityProtocolPresets.find((item) => item.id === presetId);
+    if (!preset) return;
+    setDrafts((current) => current.map((item, itemIndex) => {
+      if (itemIndex !== index) return item;
+      const purpose = item.key.trim().toLowerCase();
+      return {
+        ...item,
+        providerKind: officialCapabilityPresetValue(preset.providerKindByPurpose, purpose) || item.providerKind,
+        adapterKind: officialCapabilityPresetValue(preset.adapterKindByPurpose, purpose) || item.adapterKind,
+        protocol: preset.protocol
+      };
+    }));
+  };
+
   const addDraft = () => {
     setDrafts((current) => [
       ...current,
@@ -583,6 +628,9 @@ function OfficialCapabilitiesPanel() {
       <div className="official-capability-list">
         {drafts.map((item, index) => {
           const expanded = expandedIndex === index;
+          const protocolPresetId = officialCapabilityProtocolPresetId(item);
+          const protocolPreset = officialCapabilityProtocolPresets.find((preset) => preset.id === protocolPresetId);
+          const customProtocol = protocolPresetId === customOfficialCapabilityProtocolPresetId;
           return (
             <article className={`official-capability-card${expanded ? " expanded" : ""}`} key={`${item.id || "new"}-${index}`}>
               <button className="official-capability-card-head" onClick={() => setExpandedIndex(expanded ? null : index)} type="button">
@@ -625,6 +673,7 @@ function OfficialCapabilitiesPanel() {
                     <label>
                       Provider kind
                       <input
+                        disabled={!customProtocol}
                         onChange={(event) => updateDraft(index, { providerKind: event.target.value })}
                         placeholder="ocr-mineru-gitee"
                         value={item.providerKind}
@@ -633,19 +682,31 @@ function OfficialCapabilitiesPanel() {
                     <label>
                       Adapter kind
                       <input
+                        disabled={!customProtocol}
                         onChange={(event) => updateDraft(index, { adapterKind: event.target.value })}
                         placeholder="mineru_document_parse"
                         value={item.adapterKind}
                       />
                     </label>
                     <label>
-                      Protocol
-                      <input
-                        onChange={(event) => updateDraft(index, { protocol: event.target.value })}
-                        placeholder="mineru_async_parse"
-                        value={item.protocol}
-                      />
+                      协议方案
+                      <select onChange={(event) => updateProtocolPreset(index, event.target.value)} value={protocolPresetId}>
+                        {officialCapabilityProtocolPresets.map((preset) => (
+                          <option key={preset.id} value={preset.id}>{preset.label}</option>
+                        ))}
+                        <option value={customOfficialCapabilityProtocolPresetId}>自定义</option>
+                      </select>
                     </label>
+                    {customProtocol ? (
+                      <label>
+                        Protocol
+                        <input
+                          onChange={(event) => updateDraft(index, { protocol: event.target.value })}
+                          placeholder="mineru_async_parse"
+                          value={item.protocol}
+                        />
+                      </label>
+                    ) : null}
                     <label>
                       最低客户端版本
                       <input
@@ -671,6 +732,9 @@ function OfficialCapabilitiesPanel() {
                       />
                     </label>
                   </div>
+                  <p className="capability-protocol-hint">
+                    {protocolPreset?.description || "自定义协议会原样下发给客户端，请确认 Electron 已实现对应 adapter。"}
+                  </p>
                 </div>
               ) : null}
             </article>
@@ -889,6 +953,10 @@ function BackupCenterPanel() {
           <span>后台恢复</span>
           <strong>{config?.restoreEnabled ? "已开启" : "默认关闭"}</strong>
         </div>
+        <div>
+          <span>PG 客户端</span>
+          <strong>{config?.pgDumpVersion || config?.pgRestoreVersion || "未检测到"}</strong>
+        </div>
       </div>
 
       <div className="backup-section">
@@ -1051,8 +1119,8 @@ function BackupCenterPanel() {
                   <td>
                     <div className="backup-status-cell">
                       <StatusBadge tone={backupStatusTone(record)}>{backupStatusLabel(record)}</StatusBadge>
-                      {record.errorMessage ? <span>{record.errorMessage}</span> : null}
-                      {record.restoreError ? <span>{record.restoreError}</span> : null}
+                      {record.errorMessage ? <span>{translateBackupError(record.errorMessage)}</span> : null}
+                      {record.restoreError ? <span>{translateBackupError(record.restoreError)}</span> : null}
                     </div>
                   </td>
                   <td>
@@ -1208,6 +1276,22 @@ function splitCapabilityHints(value: string): string[] {
   return out;
 }
 
+function officialCapabilityProtocolPresetId(item: OfficialCapabilityDefinition): string {
+  const purpose = item.key.trim().toLowerCase();
+  const preset = officialCapabilityProtocolPresets.find((candidate) => {
+    const providerKind = officialCapabilityPresetValue(candidate.providerKindByPurpose, purpose);
+    const adapterKind = officialCapabilityPresetValue(candidate.adapterKindByPurpose, purpose);
+    return candidate.protocol === item.protocol &&
+      (!providerKind || providerKind === item.providerKind) &&
+      (!adapterKind || adapterKind === item.adapterKind);
+  });
+  return preset?.id || customOfficialCapabilityProtocolPresetId;
+}
+
+function officialCapabilityPresetValue(values: Partial<Record<string, string>>, purpose: string): string {
+  return values[purpose] || "";
+}
+
 function formatDate(value: string | null | undefined) {
   return value ? new Date(value).toLocaleString() : "-";
 }
@@ -1262,8 +1346,17 @@ function translateBackupError(value: string) {
     restore_in_progress: "已有恢复正在执行",
     backup_not_completed: "备份尚未完成",
     restore_disabled: "后台恢复未开启",
+    backup_sha256_missing: "备份缺少校验值，不能恢复",
+    backup_sha256_mismatch: "备份文件校验失败，已停止恢复",
     pg_dump_not_found: "API 容器缺少 pg_dump",
-    pg_restore_not_found: "API 容器缺少 pg_restore"
+    pg_restore_not_found: "API 容器缺少 pg_restore",
+    pg_dump_version_unavailable: "无法读取 pg_dump 版本，请检查 API 镜像",
+    pg_restore_version_unavailable: "无法读取 pg_restore 版本，请检查 API 镜像"
   };
+  if (code.startsWith("backup_sha256_read_failed")) return "读取备份校验值失败";
+  if (code.startsWith("pg_dump_version_mismatch")) return "pg_dump 版本低于 PostgreSQL 服务端，请重建 API 镜像";
+  if (code.startsWith("pg_restore_version_mismatch")) return "pg_restore 版本低于 PostgreSQL 服务端，请重建 API 镜像";
+  if (code.startsWith("pg_dump_failed")) return "数据库导出失败，请检查容器内 pg_dump 版本";
+  if (code.startsWith("pg_restore_failed")) return "数据库恢复失败，请检查备份文件和 pg_restore 版本";
   return map[code] ?? code;
 }

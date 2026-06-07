@@ -118,6 +118,12 @@ Diagnostics page
 Settings security panel
   Shows current admin TOTP status. Admins can generate an Authenticator QR code,
   verify a six-digit code to enable TOTP, or disable TOTP with password plus code.
+
+Cloud backup center
+  Lets admins create, download, upload-to-S3, and password-confirm restores for
+  Brevyn Cloud database backups. Restores verify the stored SHA256 digest before
+  running, use a single PostgreSQL transaction, and require pg_dump/pg_restore
+  client major versions that are not older than the server.
 ```
 
 Working closed loop:
@@ -176,6 +182,8 @@ Normal users:
 Admins:
   Log in to the Brevyn Cloud backend control console.
   Manage users, grants, redeem logs, usage, model catalog, and gateway operations.
+  Unsafe admin mutations are protected by ADMIN_ALLOWED_ORIGINS in addition to
+  the normal session/TOTP controls.
 
 Normal users must not see or use the backend control console.
 ```

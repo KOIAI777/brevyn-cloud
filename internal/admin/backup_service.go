@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,7 @@ const (
 	settingCloudBackupS3Config = "cloud_backup_s3_config"
 	settingCloudBackupSchedule = "cloud_backup_schedule"
 	maxBackupRecords           = 200
+	backupOperationLockID      = int64(2026060601)
 )
 
 var (
@@ -80,13 +82,16 @@ type BackupScheduleConfig struct {
 }
 
 type BackupRuntimeConfig struct {
-	BackupDir          string `json:"backupDir"`
-	RetentionDays      int    `json:"retentionDays"`
-	RestoreEnabled     bool   `json:"restoreEnabled"`
-	S3Configured       bool   `json:"s3Configured"`
-	ScheduleEnabled    bool   `json:"scheduleEnabled"`
-	ScheduleCronExpr   string `json:"scheduleCronExpr"`
-	PostgresClientNote string `json:"postgresClientNote"`
+	BackupDir             string `json:"backupDir"`
+	RetentionDays         int    `json:"retentionDays"`
+	RestoreEnabled        bool   `json:"restoreEnabled"`
+	S3Configured          bool   `json:"s3Configured"`
+	ScheduleEnabled       bool   `json:"scheduleEnabled"`
+	ScheduleCronExpr      string `json:"scheduleCronExpr"`
+	PostgresClientNote    string `json:"postgresClientNote"`
+	PostgresServerVersion string `json:"postgresServerVersion"`
+	PgDumpVersion         string `json:"pgDumpVersion"`
+	PgRestoreVersion      string `json:"pgRestoreVersion"`
 }
 
 type BackupRecord struct {
@@ -182,14 +187,18 @@ func (s *BackupService) RuntimeConfig(ctx context.Context) (BackupRuntimeConfig,
 	if err != nil {
 		return BackupRuntimeConfig{}, err
 	}
+	serverVersion := s.postgresServerVersion(ctx)
 	return BackupRuntimeConfig{
-		BackupDir:          s.cfg.BackupDir,
-		RetentionDays:      s.cfg.BackupRetentionDays,
-		RestoreEnabled:     s.cfg.AllowAdminDBRestore,
-		S3Configured:       s3Config.StorageConfigured,
-		ScheduleEnabled:    schedule.Enabled,
-		ScheduleCronExpr:   schedule.CronExpr,
-		PostgresClientNote: "requires pg_dump and pg_restore in the API container",
+		BackupDir:             s.cfg.BackupDir,
+		RetentionDays:         s.cfg.BackupRetentionDays,
+		RestoreEnabled:        s.cfg.AllowAdminDBRestore,
+		S3Configured:          s3Config.StorageConfigured,
+		ScheduleEnabled:       schedule.Enabled,
+		ScheduleCronExpr:      schedule.CronExpr,
+		PostgresClientNote:    "requires pg_dump and pg_restore in the API container; client major version must be >= server major version",
+		PostgresServerVersion: serverVersion,
+		PgDumpVersion:         commandVersion(ctx, "pg_dump"),
+		PgRestoreVersion:      commandVersion(ctx, "pg_restore"),
 	}, nil
 }
 
@@ -317,8 +326,14 @@ func (s *BackupService) StartBackup(ctx context.Context, triggeredBy string, exp
 	if err := s.acquireBackupOperation(); err != nil {
 		return BackupRecord{}, err
 	}
+	releaseDistributedLock, err := s.acquireDistributedBackupOperation(ctx, errBackupInProgress)
+	if err != nil {
+		s.releaseBackupOperation()
+		return BackupRecord{}, err
+	}
 	record, err := s.createBackupRecord(ctx, triggeredBy, expireDays)
 	if err != nil {
+		releaseDistributedLock()
 		s.releaseBackupOperation()
 		return BackupRecord{}, err
 	}
@@ -326,6 +341,7 @@ func (s *BackupService) StartBackup(ctx context.Context, triggeredBy string, exp
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		defer releaseDistributedLock()
 		defer s.releaseBackupOperation()
 		s.runBackupRecord(s.bgCtx, record)
 	}()
@@ -438,12 +454,19 @@ func (s *BackupService) StartRestore(ctx context.Context, publicID string) (Back
 	if err := s.acquireRestoreOperation(); err != nil {
 		return BackupRecord{}, err
 	}
-	record, err := s.GetBackup(ctx, publicID)
+	releaseDistributedLock, err := s.acquireDistributedBackupOperation(ctx, errRestoreInProgress)
 	if err != nil {
 		s.releaseRestoreOperation()
 		return BackupRecord{}, err
 	}
+	record, err := s.GetBackup(ctx, publicID)
+	if err != nil {
+		releaseDistributedLock()
+		s.releaseRestoreOperation()
+		return BackupRecord{}, err
+	}
 	if record.Status != "completed" {
+		releaseDistributedLock()
 		s.releaseRestoreOperation()
 		return BackupRecord{}, errBackupNotCompleted
 	}
@@ -451,6 +474,7 @@ func (s *BackupService) StartRestore(ctx context.Context, publicID string) (Back
 	record.RestoreStatus = "running"
 	record.RestoreError = ""
 	if err := s.updateRestoreState(ctx, record); err != nil {
+		releaseDistributedLock()
 		s.releaseRestoreOperation()
 		return BackupRecord{}, err
 	}
@@ -458,6 +482,7 @@ func (s *BackupService) StartRestore(ctx context.Context, publicID string) (Back
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		defer releaseDistributedLock()
 		defer s.releaseRestoreOperation()
 		s.runRestoreRecord(s.bgCtx, record)
 	}()
@@ -581,14 +606,6 @@ func (s *BackupService) runRestoreRecord(ctx context.Context, record BackupRecor
 	runCtx, cancel := context.WithTimeout(ctx, 45*time.Minute)
 	defer cancel()
 
-	preRestoreRecord, err := s.createAndRunPreRestoreBackup(runCtx, record.ID)
-	if err != nil {
-		record.RestoreStatus = "failed"
-		record.RestoreError = "pre_restore_backup_failed: " + err.Error()
-		_ = s.updateRestoreState(context.Background(), record)
-		return
-	}
-
 	sourcePath, cleanup, err := s.restoreSourceFile(runCtx, record)
 	if cleanup != nil {
 		defer cleanup()
@@ -596,6 +613,20 @@ func (s *BackupService) runRestoreRecord(ctx context.Context, record BackupRecor
 	if err != nil {
 		record.RestoreStatus = "failed"
 		record.RestoreError = err.Error()
+		_ = s.updateRestoreState(context.Background(), record)
+		return
+	}
+	if err := verifyBackupFileDigest(sourcePath, record.SHA256); err != nil {
+		record.RestoreStatus = "failed"
+		record.RestoreError = err.Error()
+		_ = s.updateRestoreState(context.Background(), record)
+		return
+	}
+
+	preRestoreRecord, err := s.createAndRunPreRestoreBackup(runCtx, record.ID)
+	if err != nil {
+		record.RestoreStatus = "failed"
+		record.RestoreError = "pre_restore_backup_failed: " + err.Error()
 		_ = s.updateRestoreState(context.Background(), record)
 		return
 	}
@@ -687,6 +718,9 @@ func (s *BackupService) runPgDump(ctx context.Context, filePath string) error {
 	if _, err := exec.LookPath("pg_dump"); err != nil {
 		return fmt.Errorf("pg_dump_not_found")
 	}
+	if err := s.ensurePostgresClientCompatible(ctx, "pg_dump"); err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, "pg_dump",
 		"--format=custom",
 		"--no-owner",
@@ -706,9 +740,14 @@ func (s *BackupService) runPgRestore(ctx context.Context, filePath string) error
 	if _, err := exec.LookPath("pg_restore"); err != nil {
 		return fmt.Errorf("pg_restore_not_found")
 	}
+	if err := s.ensurePostgresClientCompatible(ctx, "pg_restore"); err != nil {
+		return err
+	}
 	cmd := exec.CommandContext(ctx, "pg_restore",
 		"--clean",
 		"--if-exists",
+		"--single-transaction",
+		"--exit-on-error",
 		"--no-owner",
 		"--no-acl",
 		"--dbname", s.cfg.DatabaseURL,
@@ -720,6 +759,64 @@ func (s *BackupService) runPgRestore(ctx context.Context, filePath string) error
 		return fmt.Errorf("pg_restore_failed: %v: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func (s *BackupService) ensurePostgresClientCompatible(ctx context.Context, binary string) error {
+	clientVersion := commandVersion(ctx, binary)
+	if strings.TrimSpace(clientVersion) == "" {
+		return fmt.Errorf("%s_version_unavailable", binary)
+	}
+	clientMajor := majorVersion(clientVersion)
+	serverMajor := majorVersion(s.postgresServerVersion(ctx))
+	if clientMajor == 0 || serverMajor == 0 {
+		return nil
+	}
+	if clientMajor < serverMajor {
+		return fmt.Errorf("%s_version_mismatch: client_major=%d server_major=%d", binary, clientMajor, serverMajor)
+	}
+	return nil
+}
+
+func (s *BackupService) postgresServerVersion(ctx context.Context) string {
+	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var version string
+	if err := s.postgres.QueryRow(queryCtx, `SHOW server_version`).Scan(&version); err != nil {
+		return ""
+	}
+	return version
+}
+
+func commandVersion(ctx context.Context, binary string) string {
+	runCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(runCtx, binary, "--version").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+func majorVersion(value string) int {
+	start := -1
+	for index, r := range value {
+		if r >= '0' && r <= '9' {
+			start = index
+			break
+		}
+	}
+	if start < 0 {
+		return 0
+	}
+	end := start
+	for end < len(value) && value[end] >= '0' && value[end] <= '9' {
+		end++
+	}
+	major, err := strconv.Atoi(value[start:end])
+	if err != nil {
+		return 0
+	}
+	return major
 }
 
 func (s *BackupService) acquireBackupOperation() error {
@@ -758,6 +855,31 @@ func (s *BackupService) releaseRestoreOperation() {
 	s.opMu.Lock()
 	s.restoring = false
 	s.opMu.Unlock()
+}
+
+func (s *BackupService) acquireDistributedBackupOperation(ctx context.Context, conflictErr error) (func(), error) {
+	conn, err := s.postgres.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var acquired bool
+	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, backupOperationLockID).Scan(&acquired); err != nil {
+		conn.Release()
+		return nil, err
+	}
+	if !acquired {
+		conn.Release()
+		return nil, conflictErr
+	}
+	return func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var unlocked bool
+		if err := conn.QueryRow(unlockCtx, `SELECT pg_advisory_unlock($1)`, backupOperationLockID).Scan(&unlocked); err != nil {
+			slog.Warn("release cloud backup operation lock failed", "error", err)
+		}
+		conn.Release()
+	}, nil
 }
 
 func (s *BackupService) applySchedule(cfg BackupScheduleConfig) error {
@@ -1171,6 +1293,21 @@ func buildBackupS3Key(cfg BackupS3Config, fileName string) string {
 
 func backupPublicID() string {
 	return "cbk_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:16]
+}
+
+func verifyBackupFileDigest(path string, expectedSHA string) error {
+	expectedSHA = strings.ToLower(strings.TrimSpace(expectedSHA))
+	if expectedSHA == "" {
+		return fmt.Errorf("backup_sha256_missing")
+	}
+	_, actualSHA, err := fileDigest(path)
+	if err != nil {
+		return fmt.Errorf("backup_sha256_read_failed: %w", err)
+	}
+	if !strings.EqualFold(actualSHA, expectedSHA) {
+		return fmt.Errorf("backup_sha256_mismatch")
+	}
+	return nil
 }
 
 func fileDigest(path string) (int64, string, error) {

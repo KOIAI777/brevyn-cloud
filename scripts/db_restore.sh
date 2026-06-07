@@ -27,10 +27,10 @@ if command -v docker >/dev/null 2>&1; then
 fi
 
 if [ -n "${DATABASE_URL:-}" ] && command -v pg_restore >/dev/null 2>&1; then
-  pg_restore --clean --if-exists --no-owner --no-acl --dbname="$DATABASE_URL" "$BACKUP_FILE"
+  pg_restore --clean --if-exists --single-transaction --exit-on-error --no-owner --no-acl --dbname="$DATABASE_URL" "$BACKUP_FILE"
 elif [ -n "$compose_postgres_id" ]; then
   docker compose exec -T "$POSTGRES_SERVICE" \
-    pg_restore --clean --if-exists --no-owner --no-acl -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$BACKUP_FILE"
+    pg_restore --clean --if-exists --single-transaction --exit-on-error --no-owner --no-acl -U "$POSTGRES_USER" -d "$POSTGRES_DB" < "$BACKUP_FILE"
 else
   echo "pg_restore not found and docker compose postgres service is unavailable" >&2
   exit 1

@@ -58,7 +58,7 @@ type GatewayGroupItem struct {
 	Models                          []GatewayGroupModelItem      `json:"models"`
 	Accounts                        []GatewayUpstreamAccountItem `json:"accounts"`
 	Channels                        []GatewayChannelItem         `json:"channels"`
-	OfficialModelConfig             GatewayGroupOfficialConfig    `json:"officialModelConfig"`
+	OfficialModelConfig             GatewayGroupOfficialConfig   `json:"officialModelConfig"`
 	UpstreamAccountCount            int                          `json:"upstreamAccountCount"`
 	ActiveSchedulableAccountCount   int                          `json:"activeSchedulableAccountCount"`
 	ChannelCount                    int                          `json:"channelCount"`
@@ -256,17 +256,22 @@ type createProductRequest struct {
 	ForSale          *bool    `json:"forSale"`
 	SortOrder        int      `json:"sortOrder"`
 	Status           string   `json:"status"`
+	AuditReason      string   `json:"auditReason"`
+	Reason           string   `json:"reason"`
 }
 
 type generateRedeemCodesRequest struct {
-	ProductID     string     `json:"productId"`
-	Count         int        `json:"count"`
-	BatchName     string     `json:"batchName"`
-	Source        string     `json:"source"`
-	OrderRef      string     `json:"orderRef"`
-	Notes         string     `json:"notes"`
-	ExpiresAt     *time.Time `json:"expiresAt"`
-	ExpiresInDays *int       `json:"expiresInDays"`
+	ProductID      string     `json:"productId"`
+	Count          int        `json:"count"`
+	BatchName      string     `json:"batchName"`
+	Source         string     `json:"source"`
+	OrderRef       string     `json:"orderRef"`
+	Notes          string     `json:"notes"`
+	ExpiresAt      *time.Time `json:"expiresAt"`
+	ExpiresInDays  *int       `json:"expiresInDays"`
+	IdempotencyKey string     `json:"idempotencyKey"`
+	AuditReason    string     `json:"auditReason"`
+	Reason         string     `json:"reason"`
 }
 
 type generatedRedeemCode struct {
@@ -351,6 +356,10 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 		return
 	}
+	auditReason, ok := requireAuditReason(c, req.AuditReason, req.Reason)
+	if !ok {
+		return
+	}
 	item, err := h.catalog.CreateProduct(c.Request.Context(), req)
 	if err != nil {
 		status := http.StatusConflict
@@ -363,7 +372,12 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 		return
 	}
 	admin, _ := currentAdmin(c)
-	h.writeAuditLog(c.Request.Context(), "admin", admin.ID, "product.create", "product", item.ID, c.ClientIP(), c.Request.UserAgent(), "{}")
+	h.writeAuditLog(c.Request.Context(), "admin", admin.ID, "product.create", "product", item.ID, c.ClientIP(), c.Request.UserAgent(), auditMetadataWithReason(auditReason, map[string]any{
+		"sku":          item.SKU,
+		"name":         item.Name,
+		"benefit_type": item.BenefitType,
+		"price_cny":    item.PriceCNY,
+	}))
 	c.JSON(http.StatusCreated, gin.H{"product": item})
 }
 
@@ -372,6 +386,10 @@ func (h *Handler) UpdateProduct(c *gin.Context) {
 	var req createProductRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
+		return
+	}
+	auditReason, ok := requireAuditReason(c, req.AuditReason, req.Reason)
+	if !ok {
 		return
 	}
 	item, err := h.catalog.UpdateProduct(c.Request.Context(), productID, req)
@@ -390,7 +408,13 @@ func (h *Handler) UpdateProduct(c *gin.Context) {
 		return
 	}
 	admin, _ := currentAdmin(c)
-	h.writeAuditLog(c.Request.Context(), "admin", admin.ID, "product.update", "product", item.ID, c.ClientIP(), c.Request.UserAgent(), "{}")
+	h.writeAuditLog(c.Request.Context(), "admin", admin.ID, "product.update", "product", item.ID, c.ClientIP(), c.Request.UserAgent(), auditMetadataWithReason(auditReason, map[string]any{
+		"sku":          item.SKU,
+		"name":         item.Name,
+		"benefit_type": item.BenefitType,
+		"price_cny":    item.PriceCNY,
+		"status":       item.Status,
+	}))
 	c.JSON(http.StatusOK, gin.H{"product": item})
 }
 
@@ -575,6 +599,11 @@ func (h *Handler) GenerateRedeemCodes(c *gin.Context) {
 	req.Source = strings.TrimSpace(req.Source)
 	req.OrderRef = strings.TrimSpace(req.OrderRef)
 	req.Notes = strings.TrimSpace(req.Notes)
+	req.IdempotencyKey = firstNonEmpty(c.GetHeader("Idempotency-Key"), req.IdempotencyKey)
+	auditReason, ok := requireAuditReason(c, req.AuditReason, req.Reason)
+	if !ok {
+		return
+	}
 	if req.ProductID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "product_required"})
 		return
@@ -588,6 +617,10 @@ func (h *Handler) GenerateRedeemCodes(c *gin.Context) {
 	}
 	if req.Source == "" {
 		req.Source = "ldxp"
+	}
+	if req.OrderRef == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "order_ref_required"})
+		return
 	}
 	expiresAt, err := resolveCodeExpiry(req.ExpiresAt, req.ExpiresInDays)
 	if err != nil {
@@ -618,7 +651,13 @@ func (h *Handler) GenerateRedeemCodes(c *gin.Context) {
 		c.JSON(status, gin.H{"error": "generate_failed", "detail": err.Error()})
 		return
 	}
-	h.writeAuditLog(c.Request.Context(), "admin", admin.ID, "redeem_codes.generate", "product", req.ProductID, c.ClientIP(), c.Request.UserAgent(), fmt.Sprintf(`{"count":%d,"order_ref":%q}`, req.Count, req.OrderRef))
+	h.writeAuditLog(c.Request.Context(), "admin", admin.ID, "redeem_codes.generate", "product", req.ProductID, c.ClientIP(), c.Request.UserAgent(), auditMetadataWithReason(auditReason, map[string]any{
+		"count":           req.Count,
+		"source":          req.Source,
+		"order_ref":       req.OrderRef,
+		"batch_name":      req.BatchName,
+		"idempotency_key": req.IdempotencyKey,
+	}))
 	c.JSON(http.StatusCreated, result)
 }
 
@@ -750,10 +789,19 @@ func validateProductRequest(req *createProductRequest, allowAutoSKU bool) error 
 	if req.Name == "" {
 		return fmt.Errorf("name_required")
 	}
+	if !isFiniteAmount(req.PriceCNY) || req.PriceCNY < 0 || !hasMaxDecimalPlaces(req.PriceCNY, 2) {
+		return fmt.Errorf("price_invalid")
+	}
+	if req.OriginalPriceCNY != nil && (!isFiniteAmount(*req.OriginalPriceCNY) || *req.OriginalPriceCNY < 0 || !hasMaxDecimalPlaces(*req.OriginalPriceCNY, 2)) {
+		return fmt.Errorf("original_price_invalid")
+	}
 	switch req.BenefitType {
 	case "balance":
-		if req.Value <= 0 {
+		if !isFiniteAmount(req.Value) || req.Value <= 0 {
 			return fmt.Errorf("balance_value_required")
+		}
+		if !hasMaxDecimalPlaces(req.Value, 2) {
+			return fmt.Errorf("balance_value_precision_invalid")
 		}
 	case "subscription":
 		if req.ValidityDays <= 0 {
@@ -761,9 +809,6 @@ func validateProductRequest(req *createProductRequest, allowAutoSKU bool) error 
 		}
 	default:
 		return fmt.Errorf("unsupported_benefit_type")
-	}
-	if req.PriceCNY < 0 {
-		return fmt.Errorf("price_invalid")
 	}
 	return nil
 }

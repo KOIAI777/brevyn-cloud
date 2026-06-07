@@ -299,7 +299,39 @@ function RedeemSubsection({
 }
 
 function errorMessage(error: unknown, fallback: string) {
-  return error instanceof Error && error.message ? `${fallback}: ${error.message}` : fallback;
+  if (!(error instanceof Error) || !error.message) return fallback;
+  const translated = translateRedeemError(error.message);
+  return `${fallback}: ${translated}`;
+}
+
+function translateRedeemError(value: string) {
+  const code = value.includes(":") ? value.split(":").pop()?.trim() ?? value : value.trim();
+  const map: Record<string, string> = {
+    audit_reason_required: "请填写操作原因",
+    audit_reason_too_long: "操作原因过长",
+    order_ref_required: "请填写订单/批次编号",
+    product_required: "请选择商品",
+    count_out_of_range: "生成数量必须在 1 到 500 之间",
+    product_not_active: "商品未启用",
+    product_not_for_sale: "商品未上架",
+    product_gateway_group_not_active: "商品绑定的分组未启用",
+    balance_product_value_required: "余额商品额度必须大于 0",
+    balance_product_requires_standard_group: "余额商品不能绑定订阅分组",
+    subscription_product_requires_gateway_group: "订阅商品必须绑定 Sub2API 订阅分组",
+    subscription_product_requires_subscription_group: "订阅商品只能绑定 subscription 分组",
+    subscription_product_validity_days_required: "订阅商品有效期必须大于 0",
+    unsupported_benefit_type: "商品权益类型不支持",
+    order_ref_already_exists: "该来源下订单/批次编号已生成过",
+    sku_required: "请填写 SKU",
+    name_required: "请填写商品名",
+    price_invalid: "价格必须是非负数，最多两位小数",
+    original_price_invalid: "划线价必须是非负数，最多两位小数",
+    balance_value_required: "余额商品额度必须大于 0",
+    balance_value_precision_invalid: "余额商品额度最多两位小数",
+    validity_days_required: "订阅商品有效期必须大于 0",
+    gateway_group_not_found: "绑定分组不存在"
+  };
+  return map[code] ?? value;
 }
 
 const emptyProductForm: ProductInput = {
@@ -403,7 +435,9 @@ export function RedeemCodesPage() {
   const [source, setSource] = useState("ldxp");
   const [orderRef, setOrderRef] = useState("");
   const [batchNotes, setBatchNotes] = useState("");
+  const [batchAuditReason, setBatchAuditReason] = useState("");
   const [expiresInDays, setExpiresInDays] = useState("");
+  const [productAuditReason, setProductAuditReason] = useState("");
   const [batchSearch, setBatchSearch] = useState("");
   const [batchStatus, setBatchStatus] = useState("all");
   const [batchSource, setBatchSource] = useState("");
@@ -559,11 +593,13 @@ export function RedeemCodesPage() {
         source: source.trim() || "ldxp",
         orderRef: orderRef.trim(),
         notes: batchNotes,
-        expiresInDays: expiresInDays ? Number(expiresInDays) : undefined
+        expiresInDays: expiresInDays ? Number(expiresInDays) : undefined,
+        auditReason: batchAuditReason.trim()
       }),
     onSuccess: async (result) => {
       setGenerated(result);
       setCopyNotice("");
+      setBatchAuditReason("");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["admin-redeem-codes"] }),
         queryClient.invalidateQueries({ queryKey: ["admin-redeem-batches"] }),
@@ -573,22 +609,24 @@ export function RedeemCodesPage() {
   });
 
   const createProductMutation = useMutation({
-    mutationFn: () => createProduct(normalizeProductInput(productForm)),
+    mutationFn: () => createProduct({ ...normalizeProductInput(productForm), auditReason: productAuditReason.trim() }),
     onSuccess: async (result) => {
       setEditingProductId(null);
       setProductEditorOpen(false);
       setProductForm(emptyProductForm);
+      setProductAuditReason("");
       setProductId(result.product.id);
       setProductNotice(`商品已创建，SKU：${result.product.sku}`);
       await queryClient.invalidateQueries({ queryKey: ["admin-products"] });
     }
   });
   const updateProductMutation = useMutation({
-    mutationFn: () => updateProduct(editingProductId!, normalizeProductInput(productForm)),
+    mutationFn: () => updateProduct(editingProductId!, { ...normalizeProductInput(productForm), auditReason: productAuditReason.trim() }),
     onSuccess: async (result) => {
       setEditingProductId(null);
       setProductEditorOpen(false);
       setProductForm(emptyProductForm);
+      setProductAuditReason("");
       setProductId(result.product.id);
       setProductNotice("商品已保存");
       await queryClient.invalidateQueries({ queryKey: ["admin-products"] });
@@ -638,10 +676,17 @@ export function RedeemCodesPage() {
   });
 
   const canGenerate =
-    Boolean(productId) && count > 0 && count <= 500 && selectedProductGuard.blocking.length === 0 && !generate.isPending;
+    Boolean(productId) &&
+    count > 0 &&
+    count <= 500 &&
+    orderRef.trim() !== "" &&
+    batchAuditReason.trim() !== "" &&
+    selectedProductGuard.blocking.length === 0 &&
+    !generate.isPending;
   const canSaveProduct =
     (!editingProductId || productForm.sku.trim() !== "") &&
     productForm.name.trim() !== "" &&
+    productAuditReason.trim() !== "" &&
     (productForm.benefitType === "balance" ? Number(productForm.value) !== 0 : Number(productForm.validityDays) > 0) &&
     (productForm.benefitType !== "subscription" || Boolean(productForm.gatewayGroupId)) &&
     productFormGuard.blocking.length === 0 &&
@@ -697,6 +742,7 @@ export function RedeemCodesPage() {
     const isSubscription = preset.form.benefitType === "subscription";
     setEditingProductId(null);
     setProductEditorOpen(true);
+    setProductAuditReason("");
     setProductForm({
       ...emptyProductForm,
       ...preset.form,
@@ -718,15 +764,18 @@ export function RedeemCodesPage() {
     setEditingProductId(null);
     setProductEditorOpen(false);
     setProductForm(emptyProductForm);
+    setProductAuditReason("");
   };
   const startCreateProduct = () => {
     setEditingProductId(null);
     setProductForm(emptyProductForm);
+    setProductAuditReason("");
     setProductEditorOpen(true);
   };
   const startEditProduct = (product: Product) => {
     setEditingProductId(product.id);
     setProductEditorOpen(true);
+    setProductAuditReason("");
     setProductForm(productToForm(product));
   };
 
@@ -818,13 +867,13 @@ export function RedeemCodesPage() {
             />
           </label>
           <label>
-            联动小铺订单号
+            订单/批次编号
             <input
               onChange={(event) => setOrderRef(event.target.value)}
-              placeholder="例如：LDXP-20260601-001"
+              placeholder="例如：LDXP-20260601-001 / PROMO-0601"
               value={orderRef}
             />
-            <span className="field-hint">同一来源下订单号只能生成一次，重复提交会返回已有批次。</span>
+            <span className="field-hint">同一来源下编号只能生成一次，重复提交会返回已有批次。</span>
           </label>
           <label className="wide-field">
             内部备注
@@ -832,6 +881,14 @@ export function RedeemCodesPage() {
               onChange={(event) => setBatchNotes(event.target.value)}
               placeholder="买家备注、发货批次说明，仅供运营追踪"
               value={batchNotes}
+            />
+          </label>
+          <label className="wide-field">
+            操作原因
+            <textarea
+              onChange={(event) => setBatchAuditReason(event.target.value)}
+              placeholder="例如：联动小铺订单发货 / 活动批量赠送"
+              value={batchAuditReason}
             />
           </label>
           <div className="field-summary">
@@ -1000,6 +1057,7 @@ export function RedeemCodesPage() {
                   <input
                     min={0}
                     onChange={(event) => setProductForm((current) => ({ ...current, priceCny: Number(event.target.value) }))}
+                    step="0.01"
                     type="number"
                     value={productForm.priceCny}
                   />
@@ -1015,6 +1073,7 @@ export function RedeemCodesPage() {
                       }))
                     }
                     placeholder="可不填"
+                    step="0.01"
                     type="number"
                     value={productForm.originalPriceCny ?? ""}
                   />
@@ -1024,6 +1083,7 @@ export function RedeemCodesPage() {
                   <input
                     disabled={productForm.benefitType === "subscription"}
                     onChange={(event) => setProductForm((current) => ({ ...current, value: Number(event.target.value) }))}
+                    step="0.01"
                     type="number"
                     value={productForm.value}
                   />
@@ -1114,6 +1174,14 @@ export function RedeemCodesPage() {
                     value={productForm.features}
                   />
                 </label>
+                <label className="wide-field">
+                  操作原因
+                  <textarea
+                    onChange={(event) => setProductAuditReason(event.target.value)}
+                    placeholder={editingProductId ? "例如：修正商品价格或分组" : "例如：新增联动小铺售卖商品"}
+                    value={productAuditReason}
+                  />
+                </label>
                 <label className="inline-checkbox">
                   <input
                     checked={productForm.forSale}
@@ -1136,7 +1204,9 @@ export function RedeemCodesPage() {
                 ) : null}
               </div>
               {createProductMutation.isError || updateProductMutation.isError ? (
-                <div className="form-error">商品保存失败，请检查 SKU 是否重复，订阅商品是否绑定了有效分组。</div>
+                <div className="form-error">
+                  {errorMessage(createProductMutation.error || updateProductMutation.error, "商品保存失败")}
+                </div>
               ) : null}
             </div>
           </details>

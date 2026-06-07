@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 type CatalogService struct {
 	postgres *pgxpool.Pool
+	gateway  *GatewaySettingsService
 }
 
 type duplicateOrderRefError struct {
@@ -24,8 +26,8 @@ func (e *duplicateOrderRefError) Error() string {
 	return "order_ref_already_exists"
 }
 
-func NewCatalogService(postgres *pgxpool.Pool) *CatalogService {
-	return &CatalogService{postgres: postgres}
+func NewCatalogService(postgres *pgxpool.Pool, gateway *GatewaySettingsService) *CatalogService {
+	return &CatalogService{postgres: postgres, gateway: gateway}
 }
 
 func (s *CatalogService) ListProducts(ctx context.Context) ([]ProductItem, error) {
@@ -194,20 +196,25 @@ func (s *CatalogService) GenerateRedeemCodes(ctx context.Context, req generateRe
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	if err := lockRedeemOrderRef(ctx, tx, req.Source, req.OrderRef); err != nil {
+		return nil, err
+	}
+	if batch, encryptedCodes, existingProduct, exists, err := findRedeemBatchByOrderRef(ctx, tx, req.Source, req.OrderRef); err != nil {
+		return nil, err
+	} else if exists {
+		codes, err := s.decryptGeneratedCodes(encryptedCodes)
+		if err == nil && len(codes) > 0 {
+			return redeemGenerationResult(batch, existingProduct, codes), nil
+		}
+		return nil, &duplicateOrderRefError{Batch: batch}
+	}
+
 	product, err := loadProductForGeneration(ctx, tx, req.ProductID)
 	if err != nil {
 		return nil, err
 	}
 	if err := validateProductForGeneration(product); err != nil {
 		return nil, err
-	}
-	if err := lockRedeemOrderRef(ctx, tx, req.Source, req.OrderRef); err != nil {
-		return nil, err
-	}
-	if batch, exists, err := findRedeemBatchByOrderRef(ctx, tx, req.Source, req.OrderRef); err != nil {
-		return nil, err
-	} else if exists {
-		return nil, &duplicateOrderRefError{Batch: batch}
 	}
 
 	var batchDBID int64
@@ -247,22 +254,88 @@ func (s *CatalogService) GenerateRedeemCodes(ctx context.Context, req generateRe
 		})
 	}
 
+	encryptedCodes, err := s.encryptGeneratedCodes(generated)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE redeem_code_batches
+		SET encrypted_codes = $2,
+			updated_at = now()
+		WHERE id = $1
+	`, batchDBID, encryptedCodes); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 
+	return redeemGenerationResult(RedeemBatchItem{
+		ID:       batchPublicID,
+		Name:     req.BatchName,
+		Quantity: req.Count,
+		Source:   req.Source,
+		OrderRef: req.OrderRef,
+		Notes:    req.Notes,
+	}, product, generated), nil
+}
+
+func (s *CatalogService) encryptGeneratedCodes(codes []generatedRedeemCode) (string, error) {
+	if s.gateway == nil {
+		return "", fmt.Errorf("gateway_settings_unavailable")
+	}
+	values := make([]string, 0, len(codes))
+	for _, item := range codes {
+		values = append(values, item.Code)
+	}
+	payload, err := json.Marshal(values)
+	if err != nil {
+		return "", err
+	}
+	return s.gateway.EncryptSecret(string(payload))
+}
+
+func (s *CatalogService) decryptGeneratedCodes(encrypted string) ([]generatedRedeemCode, error) {
+	if strings.TrimSpace(encrypted) == "" {
+		return nil, fmt.Errorf("redeem_codes_not_stored")
+	}
+	if s.gateway == nil {
+		return nil, fmt.Errorf("gateway_settings_unavailable")
+	}
+	plain, err := s.gateway.DecryptSecret(encrypted)
+	if err != nil {
+		return nil, err
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(plain), &values); err != nil {
+		return nil, err
+	}
+	codes := make([]generatedRedeemCode, 0, len(values))
+	for _, value := range values {
+		prefix := codePrefix(value)
+		codes = append(codes, generatedRedeemCode{
+			Code:       value,
+			MaskedCode: maskCode(prefix),
+			CodePrefix: prefix,
+		})
+	}
+	return codes, nil
+}
+
+func redeemGenerationResult(batch RedeemBatchItem, product generationProduct, codes []generatedRedeemCode) map[string]any {
 	return map[string]any{
 		"batch": map[string]any{
-			"id":       batchPublicID,
-			"name":     req.BatchName,
-			"quantity": req.Count,
-			"source":   req.Source,
-			"orderRef": req.OrderRef,
-			"notes":    req.Notes,
+			"id":       batch.ID,
+			"name":     batch.Name,
+			"quantity": batch.Quantity,
+			"source":   batch.Source,
+			"orderRef": batch.OrderRef,
+			"notes":    batch.Notes,
 		},
 		"product": product,
-		"codes":   generated,
-	}, nil
+		"codes":   codes,
+	}
 }
 
 func lockRedeemOrderRef(ctx context.Context, tx pgx.Tx, source, orderRef string) error {
@@ -277,24 +350,33 @@ func redeemOrderRefLockKey(source, orderRef string) string {
 	return strings.ToLower(strings.TrimSpace(source)) + "\x00" + strings.ToLower(strings.TrimSpace(orderRef))
 }
 
-func findRedeemBatchByOrderRef(ctx context.Context, tx pgx.Tx, source, orderRef string) (RedeemBatchItem, bool, error) {
+func findRedeemBatchByOrderRef(ctx context.Context, tx pgx.Tx, source, orderRef string) (RedeemBatchItem, string, generationProduct, bool, error) {
 	if strings.TrimSpace(orderRef) == "" {
-		return RedeemBatchItem{}, false, nil
+		return RedeemBatchItem{}, "", generationProduct{}, false, nil
 	}
 	var item RedeemBatchItem
+	var encryptedCodes string
+	var product generationProduct
 	err := tx.QueryRow(ctx, `
 		SELECT b.public_id, b.name, b.source, b.order_ref, b.quantity, b.status, b.notes,
 			coalesce(p.public_id, ''), coalesce(p.name, ''),
 			count(rc.id) FILTER (WHERE rc.status = 'unused')::int AS unused_count,
 			count(rc.id) FILTER (WHERE rc.status = 'used')::int AS used_count,
-			b.created_at
+			b.created_at,
+			coalesce(b.encrypted_codes, ''),
+			coalesce(p.id, 0), coalesce(p.public_id, ''), coalesce(p.sku, ''),
+			coalesce(p.name, ''), coalesce(p.benefit_type, ''), coalesce(p.value, 0),
+			coalesce(p.validity_days, 0), p.gateway_group_id, coalesce(p.external_group_id, 0),
+			coalesce(p.status, ''), coalesce(p.for_sale, false),
+			coalesce(gg.subscription_type, ''), coalesce(gg.status, '')
 		FROM redeem_code_batches b
 		LEFT JOIN products p ON p.id = b.product_id
+		LEFT JOIN gateway_groups gg ON gg.id = p.gateway_group_id
 		LEFT JOIN redeem_codes rc ON rc.batch_id = b.id
 		WHERE lower(b.source) = lower($1)
 			AND lower(b.order_ref) = lower($2)
 			AND b.order_ref <> ''
-		GROUP BY b.id, p.public_id, p.name
+		GROUP BY b.id, p.id, gg.subscription_type, gg.status
 		ORDER BY b.created_at DESC
 		LIMIT 1
 	`, strings.TrimSpace(source), strings.TrimSpace(orderRef)).Scan(
@@ -310,14 +392,28 @@ func findRedeemBatchByOrderRef(ctx context.Context, tx pgx.Tx, source, orderRef 
 		&item.UnusedCount,
 		&item.UsedCount,
 		&item.CreatedAt,
+		&encryptedCodes,
+		&product.dbID,
+		&product.ID,
+		&product.SKU,
+		&product.Name,
+		&product.BenefitType,
+		&product.Value,
+		&product.ValidityDays,
+		&product.gatewayGroupDBID,
+		&product.ExternalGroupID,
+		&product.status,
+		&product.forSale,
+		&product.groupSubscriptionType,
+		&product.groupStatus,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return RedeemBatchItem{}, false, nil
+		return RedeemBatchItem{}, "", generationProduct{}, false, nil
 	}
 	if err != nil {
-		return RedeemBatchItem{}, false, err
+		return RedeemBatchItem{}, "", generationProduct{}, false, err
 	}
-	return item, true, nil
+	return item, encryptedCodes, product, true, nil
 }
 
 func (s *CatalogService) DisableRedeemCode(ctx context.Context, codeID string) (RedeemCodeItem, error) {
@@ -466,10 +562,12 @@ func isProductValidationError(err error) bool {
 	case "sku_required",
 		"name_required",
 		"balance_value_required",
+		"balance_value_precision_invalid",
 		"balance_product_requires_standard_group",
 		"validity_days_required",
 		"unsupported_benefit_type",
 		"price_invalid",
+		"original_price_invalid",
 		"gateway_group_not_found",
 		"product_gateway_group_not_active",
 		"subscription_product_requires_gateway_group",

@@ -248,6 +248,9 @@ export type BackupRuntimeConfig = {
   scheduleEnabled: boolean;
   scheduleCronExpr: string;
   postgresClientNote: string;
+  postgresServerVersion: string;
+  pgDumpVersion: string;
+  pgRestoreVersion: string;
 };
 
 export type BackupS3Config = {
@@ -629,6 +632,7 @@ export type AssignSubscriptionInput = {
 
 export type ExtendSubscriptionInput = {
   days: number;
+  idempotencyKey?: string;
   auditReason?: string;
 };
 
@@ -636,6 +640,7 @@ export type ResetSubscriptionQuotaInput = {
   daily: boolean;
   weekly: boolean;
   monthly: boolean;
+  idempotencyKey?: string;
   auditReason?: string;
 };
 
@@ -808,10 +813,13 @@ export type GenerateRedeemCodesInput = {
   orderRef?: string;
   notes?: string;
   expiresInDays?: number;
+  idempotencyKey?: string;
+  auditReason?: string;
 };
 
 export type AuditReasonInput = {
   auditReason?: string;
+  idempotencyKey?: string;
 };
 
 export type GenerateRedeemCodesResult = {
@@ -1297,14 +1305,14 @@ export function getProducts() {
   return request<{ items: Product[]; total: number }>("/api/v1/admin/products");
 }
 
-export function createProduct(input: ProductInput) {
+export function createProduct(input: ProductInput & AuditReasonInput) {
   return request<{ product: Product }>("/api/v1/admin/products", {
     method: "POST",
     body: JSON.stringify(input)
   });
 }
 
-export function updateProduct(id: string, input: ProductInput) {
+export function updateProduct(id: string, input: ProductInput & AuditReasonInput) {
   return request<{ product: Product }>(`/api/v1/admin/products/${encodeURIComponent(id)}`, {
     method: "PUT",
     body: JSON.stringify(input)
@@ -1344,9 +1352,11 @@ export function disableRedeemCode(id: string, input: AuditReasonInput = {}) {
 }
 
 export function generateRedeemCodes(input: GenerateRedeemCodesInput) {
+  const idempotencyKey = input.idempotencyKey || createIdempotencyKey("admin-generate-redeem-codes");
   return request<GenerateRedeemCodesResult>("/api/v1/admin/redeem-codes/generate", {
     method: "POST",
-    body: JSON.stringify(input)
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ ...input, idempotencyKey })
   });
 }
 
@@ -1368,23 +1378,29 @@ export function assignSubscription(input: AssignSubscriptionInput) {
 }
 
 export function extendSubscription(id: number, input: ExtendSubscriptionInput) {
+  const idempotencyKey = input.idempotencyKey || createIdempotencyKey("admin-extend-subscription");
   return request<{ subscription: AdminSubscription }>(`/api/v1/admin/subscriptions/${encodeURIComponent(String(id))}/extend`, {
     method: "POST",
-    body: JSON.stringify(input)
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ ...input, idempotencyKey })
   });
 }
 
 export function resetSubscriptionQuota(id: number, input: ResetSubscriptionQuotaInput) {
+  const idempotencyKey = input.idempotencyKey || createIdempotencyKey("admin-reset-subscription-quota");
   return request<{ subscription: AdminSubscription }>(`/api/v1/admin/subscriptions/${encodeURIComponent(String(id))}/reset-quota`, {
     method: "POST",
-    body: JSON.stringify(input)
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ ...input, idempotencyKey })
   });
 }
 
 export function revokeSubscription(id: number, input: AuditReasonInput = {}) {
+  const idempotencyKey = input.idempotencyKey || createIdempotencyKey("admin-revoke-subscription");
   return request<{ status: string }>(`/api/v1/admin/subscriptions/${encodeURIComponent(String(id))}`, {
     method: "DELETE",
-    body: JSON.stringify(input)
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify({ ...input, idempotencyKey })
   });
 }
 

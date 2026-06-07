@@ -322,7 +322,7 @@ export function UserDetailPage() {
           <div className="form-grid settings-form-grid">
             <label>
               <span>赠送额度</span>
-              <input inputMode="decimal" onChange={(event) => setGrantAmount(event.target.value)} placeholder="例如 10" value={grantAmount} />
+              <input inputMode="decimal" onChange={(event) => setGrantAmount(event.target.value)} placeholder="例如 10" step="0.01" type="number" value={grantAmount} />
             </label>
             <label>
               <span>备注</span>

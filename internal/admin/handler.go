@@ -99,7 +99,7 @@ func newHandler(cfg *config.Config, postgres *pgxpool.Pool, opts []HandlerOption
 		redeem:        redeemsvc.NewGatewaySyncService(cfg, postgres, redisClient),
 		users:         NewUserService(postgres),
 		userDetails:   NewUserDetailService(postgres),
-		catalog:       NewCatalogService(postgres),
+		catalog:       NewCatalogService(postgres, gateway),
 		gatewayGroups: NewGatewayGroupService(postgres),
 		capabilities:  NewOfficialCapabilityService(postgres),
 		redeemQueries: NewRedeemQueryService(postgres),

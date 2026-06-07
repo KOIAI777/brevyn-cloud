@@ -123,12 +123,12 @@ func (s *SubscriptionService) Assign(ctx context.Context, input sub2api.AssignSu
 	return &out, nil
 }
 
-func (s *SubscriptionService) Extend(ctx context.Context, subscriptionID int64, days int) (*AdminSubscriptionItem, error) {
+func (s *SubscriptionService) Extend(ctx context.Context, subscriptionID int64, days int, idempotencyKey string) (*AdminSubscriptionItem, error) {
 	client, err := s.client(ctx)
 	if err != nil {
 		return nil, err
 	}
-	item, err := client.ExtendSubscription(ctx, subscriptionID, sub2api.ExtendSubscriptionRequest{Days: days}, subscriptionIdempotencyKey("extend", subscriptionID))
+	item, err := client.ExtendSubscription(ctx, subscriptionID, sub2api.ExtendSubscriptionRequest{Days: days}, subscriptionIdempotencyKey("extend", subscriptionID, idempotencyKey))
 	if err != nil {
 		return nil, fmt.Errorf("sub2api_subscription_extend_failed: %w", err)
 	}
@@ -136,7 +136,7 @@ func (s *SubscriptionService) Extend(ctx context.Context, subscriptionID int64, 
 	return &out, nil
 }
 
-func (s *SubscriptionService) ResetQuota(ctx context.Context, subscriptionID int64, daily, weekly, monthly bool) (*AdminSubscriptionItem, error) {
+func (s *SubscriptionService) ResetQuota(ctx context.Context, subscriptionID int64, daily, weekly, monthly bool, idempotencyKey string) (*AdminSubscriptionItem, error) {
 	client, err := s.client(ctx)
 	if err != nil {
 		return nil, err
@@ -145,7 +145,7 @@ func (s *SubscriptionService) ResetQuota(ctx context.Context, subscriptionID int
 		Daily:   daily,
 		Weekly:  weekly,
 		Monthly: monthly,
-	}, subscriptionIdempotencyKey("reset-quota", subscriptionID))
+	}, subscriptionIdempotencyKey("reset-quota", subscriptionID, idempotencyKey))
 	if err != nil {
 		return nil, fmt.Errorf("sub2api_subscription_reset_quota_failed: %w", err)
 	}
@@ -153,12 +153,12 @@ func (s *SubscriptionService) ResetQuota(ctx context.Context, subscriptionID int
 	return &out, nil
 }
 
-func (s *SubscriptionService) Revoke(ctx context.Context, subscriptionID int64) error {
+func (s *SubscriptionService) Revoke(ctx context.Context, subscriptionID int64, idempotencyKey string) error {
 	client, err := s.client(ctx)
 	if err != nil {
 		return err
 	}
-	if err := client.RevokeSubscription(ctx, subscriptionID, subscriptionIdempotencyKey("revoke", subscriptionID)); err != nil {
+	if err := client.RevokeSubscription(ctx, subscriptionID, subscriptionIdempotencyKey("revoke", subscriptionID, idempotencyKey)); err != nil {
 		return fmt.Errorf("sub2api_subscription_revoke_failed: %w", err)
 	}
 	return nil

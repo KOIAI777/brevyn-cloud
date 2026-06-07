@@ -16,7 +16,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-const currentSchemaVersion = "20260606_cloud_backup_center"
+const currentSchemaVersion = "20260607_redeem_backup_hardening"
 
 type schemaExecutor interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
@@ -429,6 +429,7 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 			quantity INT NOT NULL DEFAULT 0,
 			status TEXT NOT NULL DEFAULT 'active',
 			notes TEXT NOT NULL DEFAULT '',
+			encrypted_codes TEXT NOT NULL DEFAULT '',
 			created_by_admin_id BIGINT REFERENCES admin_users(id) ON DELETE SET NULL,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -457,6 +458,7 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 		`ALTER TABLE redeem_codes ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual'`,
 		`ALTER TABLE redeem_codes ADD COLUMN IF NOT EXISTS metadata JSONB NOT NULL DEFAULT '{}'::jsonb`,
 		`ALTER TABLE redeem_code_batches ADD COLUMN IF NOT EXISTS order_ref TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE redeem_code_batches ADD COLUMN IF NOT EXISTS encrypted_codes TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE redeem_codes ADD COLUMN IF NOT EXISTS order_ref TEXT NOT NULL DEFAULT ''`,
 		`CREATE TABLE IF NOT EXISTS redeem_redemptions (
 			id BIGSERIAL PRIMARY KEY,
@@ -599,6 +601,9 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 		`CREATE INDEX IF NOT EXISTS idx_products_gateway_group_id ON products(gateway_group_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_redeem_code_batches_product_id ON redeem_code_batches(product_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_redeem_code_batches_order_ref ON redeem_code_batches(order_ref)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_redeem_code_batches_source_order_ref_unique
+			ON redeem_code_batches(lower(source), lower(order_ref))
+			WHERE order_ref <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_redeem_code_batches_created_at ON redeem_code_batches(created_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_redeem_codes_status ON redeem_codes(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_redeem_codes_product_id ON redeem_codes(product_id)`,

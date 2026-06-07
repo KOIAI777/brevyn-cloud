@@ -23,18 +23,19 @@ type Config struct {
 	BackupRetentionDays int
 	AllowAdminDBRestore bool
 
-	AppBaseURL        string
-	AdminBaseURL      string
-	AllowedOrigins    []string
-	TrustedProxies    []string
-	AdminWebDir       string
-	DeviceSoftLimit   int
-	EncryptionKey     string
-	SessionSecret     string
-	JWTAccessSecret   string
-	JWTRefreshSecret  string
-	AdminSeedEmail    string
-	AdminSeedPassword string
+	AppBaseURL          string
+	AdminBaseURL        string
+	AllowedOrigins      []string
+	AdminAllowedOrigins []string
+	TrustedProxies      []string
+	AdminWebDir         string
+	DeviceSoftLimit     int
+	EncryptionKey       string
+	SessionSecret       string
+	JWTAccessSecret     string
+	JWTRefreshSecret    string
+	AdminSeedEmail      string
+	AdminSeedPassword   string
 
 	Sub2APIBaseURL               string
 	Sub2APIAdminAPIKey           string
@@ -68,6 +69,7 @@ func Load() (*Config, error) {
 		AppBaseURL:                   getenv("APP_BASE_URL", "http://127.0.0.1:4000"),
 		AdminBaseURL:                 getenv("ADMIN_BASE_URL", "http://127.0.0.1:4000/admin"),
 		AllowedOrigins:               getCSV("CORS_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"),
+		AdminAllowedOrigins:          getCSV("ADMIN_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"),
 		TrustedProxies:               getCSV("TRUSTED_PROXIES", ""),
 		AdminWebDir:                  getenv("ADMIN_WEB_DIR", "./web/admin/dist"),
 		DeviceSoftLimit:              getInt("DEVICE_SOFT_LIMIT", 3),
@@ -153,8 +155,16 @@ func (c *Config) validateProduction() error {
 	if slicesContains(c.AllowedOrigins, "*") {
 		return fmt.Errorf("CORS_ALLOWED_ORIGINS must not contain * in production")
 	}
+	if slicesContains(c.AdminAllowedOrigins, "*") {
+		return fmt.Errorf("ADMIN_ALLOWED_ORIGINS must not contain * in production")
+	}
 	for _, origin := range c.AllowedOrigins {
-		if err := validateProductionOrigin(origin); err != nil {
+		if err := validateProductionOrigin("CORS_ALLOWED_ORIGINS", origin); err != nil {
+			return err
+		}
+	}
+	for _, origin := range c.AdminAllowedOrigins {
+		if err := validateProductionOrigin("ADMIN_ALLOWED_ORIGINS", origin); err != nil {
 			return err
 		}
 	}
@@ -174,17 +184,17 @@ func (c *Config) validateProduction() error {
 	return nil
 }
 
-func validateProductionOrigin(value string) error {
+func validateProductionOrigin(name, value string) error {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil
 	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("CORS_ALLOWED_ORIGINS contains invalid origin %q", value)
+		return fmt.Errorf("%s contains invalid origin %q", name, value)
 	}
 	if parsed.Scheme != "https" && !isLocalHost(parsed.Hostname()) {
-		return fmt.Errorf("CORS_ALLOWED_ORIGINS origin %q must use https in production", value)
+		return fmt.Errorf("%s origin %q must use https in production", name, value)
 	}
 	return nil
 }

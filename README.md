@@ -70,10 +70,12 @@ Set `APP_ENV=production` and replace all secrets in `.env`. Production startup
 requires HTTPS, non-local values for `APP_BASE_URL`, `ADMIN_BASE_URL`, and
 `OFFICIAL_PROVIDER_BASE_URL`.
 
-Do not use `CORS_ALLOWED_ORIGINS=*` in production. List exact HTTPS origins
-instead. Leave `TRUSTED_PROXIES` empty for direct container access; when Brevyn
-Cloud sits behind a reverse proxy, set it to the proxy IP/CIDR values that are
-allowed to provide `X-Forwarded-For`.
+Do not use `CORS_ALLOWED_ORIGINS=*` or `ADMIN_ALLOWED_ORIGINS=*` in production.
+List exact HTTPS origins instead. `CORS_ALLOWED_ORIGINS` controls browser API
+CORS, while `ADMIN_ALLOWED_ORIGINS` protects unsafe admin mutations from
+unexpected origins. Leave `TRUSTED_PROXIES` empty for direct container access;
+when Brevyn Cloud sits behind a reverse proxy, set it to the proxy IP/CIDR
+values that are allowed to provide `X-Forwarded-For`.
 
 Keep the two Sub2API URLs separate:
 
@@ -125,6 +127,11 @@ The admin Settings page also includes a Cloud Backup Center. In Docker Compose,
 the API container writes local backups to `/app/backups/postgres`, mounted from
 `./backups`, and can optionally upload a second copy to S3-compatible storage
 such as Cloudflare R2.
+
+The API image must include PostgreSQL client tools whose major version is at
+least the database server major version. After upgrading Postgres, rebuild the
+API image before running Cloud backups or restores so `pg_dump`/`pg_restore`
+match the server.
 
 Restores are destructive and require an explicit confirmation flag:
 

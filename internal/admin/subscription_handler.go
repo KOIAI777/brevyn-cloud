@@ -103,9 +103,10 @@ func (h *Handler) ExtendSubscription(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Days        int    `json:"days"`
-		AuditReason string `json:"auditReason"`
-		Reason      string `json:"reason"`
+		Days           int    `json:"days"`
+		IdempotencyKey string `json:"idempotencyKey"`
+		AuditReason    string `json:"auditReason"`
+		Reason         string `json:"reason"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
@@ -119,7 +120,7 @@ func (h *Handler) ExtendSubscription(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "subscription_extend_days_required"})
 		return
 	}
-	item, err := h.subscriptions.Extend(c.Request.Context(), subscriptionID, req.Days)
+	item, err := h.subscriptions.Extend(c.Request.Context(), subscriptionID, req.Days, firstNonEmpty(c.GetHeader("Idempotency-Key"), req.IdempotencyKey))
 	if err != nil {
 		writeSubscriptionError(c, err)
 		return
@@ -151,11 +152,12 @@ func (h *Handler) ResetSubscriptionQuota(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Daily       bool   `json:"daily"`
-		Weekly      bool   `json:"weekly"`
-		Monthly     bool   `json:"monthly"`
-		AuditReason string `json:"auditReason"`
-		Reason      string `json:"reason"`
+		Daily          bool   `json:"daily"`
+		Weekly         bool   `json:"weekly"`
+		Monthly        bool   `json:"monthly"`
+		IdempotencyKey string `json:"idempotencyKey"`
+		AuditReason    string `json:"auditReason"`
+		Reason         string `json:"reason"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
@@ -169,7 +171,7 @@ func (h *Handler) ResetSubscriptionQuota(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "subscription_reset_quota_scope_required"})
 		return
 	}
-	item, err := h.subscriptions.ResetQuota(c.Request.Context(), subscriptionID, req.Daily, req.Weekly, req.Monthly)
+	item, err := h.subscriptions.ResetQuota(c.Request.Context(), subscriptionID, req.Daily, req.Weekly, req.Monthly, firstNonEmpty(c.GetHeader("Idempotency-Key"), req.IdempotencyKey))
 	if err != nil {
 		writeSubscriptionError(c, err)
 		return
@@ -202,8 +204,9 @@ func (h *Handler) RevokeSubscription(c *gin.Context) {
 		return
 	}
 	var req struct {
-		AuditReason string `json:"auditReason"`
-		Reason      string `json:"reason"`
+		IdempotencyKey string `json:"idempotencyKey"`
+		AuditReason    string `json:"auditReason"`
+		Reason         string `json:"reason"`
 	}
 	if !bindOptionalJSON(c, &req) {
 		return
@@ -212,7 +215,7 @@ func (h *Handler) RevokeSubscription(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.subscriptions.Revoke(c.Request.Context(), subscriptionID); err != nil {
+	if err := h.subscriptions.Revoke(c.Request.Context(), subscriptionID, firstNonEmpty(c.GetHeader("Idempotency-Key"), req.IdempotencyKey)); err != nil {
 		writeSubscriptionError(c, err)
 		return
 	}

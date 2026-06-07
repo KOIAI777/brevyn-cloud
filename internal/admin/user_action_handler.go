@@ -44,8 +44,12 @@ func (h *Handler) GrantUserBalance(c *gin.Context) {
 		return
 	}
 	req.Notes = strings.TrimSpace(req.Notes)
-	if req.Amount <= 0 || req.Amount > 100000 {
+	if !isFiniteAmount(req.Amount) || req.Amount <= 0 || req.Amount > 100000 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "amount_must_be_0_to_100000"})
+		return
+	}
+	if !hasMaxDecimalPlaces(req.Amount, 2) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount_precision_invalid"})
 		return
 	}
 	auditReason, ok := requireAuditReason(c, req.AuditReason, req.Reason)
