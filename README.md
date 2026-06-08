@@ -72,6 +72,20 @@ development defaults. Set `APP_ENV=production` and replace all secrets in
 `.env`. Production startup requires HTTPS, non-local values for `APP_BASE_URL`,
 `ADMIN_BASE_URL`, and `OFFICIAL_PROVIDER_BASE_URL`.
 
+For the first production version, deploy from GitHub source and build on the
+server. After the repository is cloned and `.env` is created on the server,
+updates can be applied with:
+
+```bash
+cd /data/brevyn-cloud
+bash scripts/update-server.sh
+```
+
+The script fetches `origin/main`, performs a fast-forward merge, validates Docker
+Compose, creates a Postgres backup when the database is already running, rebuilds
+the services, waits for `/readyz`, and rolls back to the previous commit if the
+health check fails.
+
 Do not use `CORS_ALLOWED_ORIGINS=*` or `ADMIN_ALLOWED_ORIGINS=*` in production.
 List exact HTTPS origins instead. `CORS_ALLOWED_ORIGINS` controls browser API
 CORS, while `ADMIN_ALLOWED_ORIGINS` protects unsafe admin mutations from
