@@ -897,7 +897,7 @@ func (h *Handler) ModelCatalog(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "group_permission_query_failed"})
 			return
 		}
-		if !allowed {
+		if !allowed && requestedGroupID != h.defaultOfficialProviderGroupID(c.Request.Context(), user.ID) {
 			writeAuthAPIError(c, http.StatusForbidden, "group_not_available", "当前账号无权查看该分组模型")
 			return
 		}
@@ -1090,10 +1090,43 @@ func (h *Handler) userGatewayGroups(ctx context.Context, userID int64, currentGr
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	groups, err = h.appendDefaultOfficialGatewayGroup(ctx, userID, currentGroupID, groups)
+	if err != nil {
+		return nil, err
+	}
 	if err := h.attachOfficialModelConfigs(ctx, groups); err != nil {
 		return nil, err
 	}
 	return groups, nil
+}
+
+func (h *Handler) appendDefaultOfficialGatewayGroup(ctx context.Context, userID int64, currentGroupID int64, groups []gatewayGroupSummary) ([]gatewayGroupSummary, error) {
+	officialGroupID := h.officialCapabilityGroupID(ctx, userID)
+	if officialGroupID <= 0 {
+		return groups, nil
+	}
+	for i := range groups {
+		if groups[i].ExternalGroupID != officialGroupID {
+			continue
+		}
+		groups[i].Source = appendSource(groups[i].Source, "official_default")
+		return groups, nil
+	}
+	group, err := h.gatewayGroupByExternalID(ctx, officialGroupID)
+	if err != nil {
+		return nil, err
+	}
+	if group == nil {
+		group = &gatewayGroupSummary{
+			ExternalGroupID: officialGroupID,
+			Name:            fmt.Sprintf("group #%d", officialGroupID),
+			Platform:        "openai",
+			Status:          "unknown",
+		}
+	}
+	group.Source = appendSource(group.Source, "official_default")
+	group.IsCurrent = group.ExternalGroupID == currentGroupID
+	return append(groups, *group), nil
 }
 
 func (h *Handler) attachOfficialModelConfigs(ctx context.Context, groups []gatewayGroupSummary) error {
@@ -1289,6 +1322,18 @@ func (h *Handler) userExternalGroupIDs(ctx context.Context, userID int64) ([]int
 			groupIDs = append(groupIDs, defaultGroupID)
 		}
 	}
+	if officialGroupID := h.officialCapabilityGroupID(ctx, userID); officialGroupID > 0 {
+		exists := false
+		for _, groupID := range groupIDs {
+			if groupID == officialGroupID {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			groupIDs = append(groupIDs, officialGroupID)
+		}
+	}
 	return groupIDs, nil
 }
 
@@ -1421,7 +1466,7 @@ func (h *Handler) resolveOfficialProviderGroupID(ctx context.Context, user Princ
 			Err:    err,
 		}
 	}
-	if !allowed && requestedGroupID != h.gatewaySync.DefaultExternalGroupID(ctx) {
+	if !allowed && requestedGroupID != h.defaultOfficialProviderGroupID(ctx, user.ID) {
 		return 0, officialGatewayCredentialError{
 			Status: http.StatusForbidden,
 			Code:   "group_not_available",
@@ -1432,10 +1477,77 @@ func (h *Handler) resolveOfficialProviderGroupID(ctx context.Context, user Princ
 }
 
 func (h *Handler) defaultOfficialProviderGroupID(ctx context.Context, userID int64) int64 {
-	if account, err := h.gatewaySync.GatewayAccount(ctx, userID); err == nil && account != nil && account.DefaultGroupID > 0 {
-		return account.DefaultGroupID
+	if groupID := h.officialCapabilityGroupID(ctx, userID); groupID > 0 {
+		return groupID
 	}
 	return h.gatewaySync.DefaultExternalGroupID(ctx)
+}
+
+func (h *Handler) officialCapabilityGroupID(ctx context.Context, userID int64) int64 {
+	if account, err := h.gatewaySync.GatewayAccount(ctx, userID); err == nil && account != nil && account.DefaultGroupID > 0 {
+		if ok, _ := h.groupHasOfficialCapabilities(ctx, account.DefaultGroupID); ok {
+			return account.DefaultGroupID
+		}
+	}
+	if defaultGroupID := h.gatewaySync.DefaultExternalGroupID(ctx); defaultGroupID > 0 {
+		if ok, _ := h.groupHasOfficialCapabilities(ctx, defaultGroupID); ok {
+			return defaultGroupID
+		}
+	}
+	if groupID, err := h.firstOfficialCapabilityGroupID(ctx); err == nil && groupID > 0 {
+		return groupID
+	}
+	return 0
+}
+
+func (h *Handler) groupHasOfficialCapabilities(ctx context.Context, externalGroupID int64) (bool, error) {
+	if externalGroupID <= 0 {
+		return false, nil
+	}
+	var exists bool
+	err := h.postgres.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM gateway_group_model_roles ggmr
+			JOIN official_capability_definitions ocd
+				ON ocd.capability_key = ggmr.purpose AND ocd.enabled = true
+			JOIN gateway_groups gg
+				ON gg.provider = ggmr.provider AND gg.external_group_id = ggmr.external_group_id
+			WHERE ggmr.provider = 'sub2api'
+				AND ggmr.external_group_id = $1
+				AND ggmr.enabled = true
+				AND gg.status = 'active'
+		)
+	`, externalGroupID).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
+}
+
+func (h *Handler) firstOfficialCapabilityGroupID(ctx context.Context) (int64, error) {
+	var groupID int64
+	err := h.postgres.QueryRow(ctx, `
+		SELECT ggmr.external_group_id
+		FROM gateway_group_model_roles ggmr
+		JOIN official_capability_definitions ocd
+			ON ocd.capability_key = ggmr.purpose AND ocd.enabled = true
+		JOIN gateway_groups gg
+			ON gg.provider = ggmr.provider AND gg.external_group_id = ggmr.external_group_id
+		WHERE ggmr.provider = 'sub2api'
+			AND ggmr.enabled = true
+			AND gg.status = 'active'
+		GROUP BY ggmr.external_group_id
+		ORDER BY min(ggmr.sort_order) ASC, ggmr.external_group_id ASC
+		LIMIT 1
+	`).Scan(&groupID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return groupID, nil
 }
 
 func (h *Handler) localOfficialGatewayCredential(ctx context.Context, user Principal, externalGroupID int64) (officialGatewayCredential, error) {
@@ -1595,7 +1707,7 @@ func (h *Handler) ensureOfficialGatewayCredentialForGroup(ctx context.Context, u
 }
 
 func (h *Handler) enqueueGatewayProvision(ctx context.Context, user Principal, cause error) (string, error) {
-	return h.enqueueGatewayProvisionForGroup(ctx, user, h.gatewaySync.DefaultExternalGroupID(ctx), cause)
+	return h.enqueueGatewayProvisionForGroup(ctx, user, h.defaultOfficialProviderGroupID(ctx, user.ID), cause)
 }
 
 func (h *Handler) enqueueGatewayProvisionForGroup(ctx context.Context, user Principal, externalGroupID int64, cause error) (string, error) {
@@ -1604,7 +1716,7 @@ func (h *Handler) enqueueGatewayProvisionForGroup(ctx context.Context, user Prin
 		reason = cause.Error()
 	}
 	if externalGroupID <= 0 {
-		externalGroupID = h.gatewaySync.DefaultExternalGroupID(ctx)
+		externalGroupID = h.defaultOfficialProviderGroupID(ctx, user.ID)
 	}
 	return operations.EnsureGatewayProvision(ctx, h.postgres, user.ID, user.PublicID, externalGroupID, reason)
 }
