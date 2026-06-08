@@ -18,3 +18,14 @@ func TestNormalizeAuditReasonSanitizesBeforeValidation(t *testing.T) {
 		t.Fatalf("normalizeAuditReason() = %q, want %q", got, want)
 	}
 }
+
+func TestRedeemOrderRefLockKeyIsStableBigInt(t *testing.T) {
+	got := redeemOrderRefLockKey(" LDXP ", " Order-001 ")
+	want := redeemOrderRefLockKey("ldxp", "order-001")
+	if got != want {
+		t.Fatalf("redeemOrderRefLockKey should normalize case and whitespace")
+	}
+	if got == 0 {
+		t.Fatalf("redeemOrderRefLockKey should not produce an empty lock key")
+	}
+}

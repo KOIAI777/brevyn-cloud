@@ -2,6 +2,8 @@ package admin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -342,12 +344,14 @@ func lockRedeemOrderRef(ctx context.Context, tx pgx.Tx, source, orderRef string)
 	if strings.TrimSpace(orderRef) == "" {
 		return nil
 	}
-	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, redeemOrderRefLockKey(source, orderRef))
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, redeemOrderRefLockKey(source, orderRef))
 	return err
 }
 
-func redeemOrderRefLockKey(source, orderRef string) string {
-	return strings.ToLower(strings.TrimSpace(source)) + "\x00" + strings.ToLower(strings.TrimSpace(orderRef))
+func redeemOrderRefLockKey(source, orderRef string) int64 {
+	key := strings.ToLower(strings.TrimSpace(source)) + "\n" + strings.ToLower(strings.TrimSpace(orderRef))
+	sum := sha256.Sum256([]byte(key))
+	return int64(binary.BigEndian.Uint64(sum[:8]))
 }
 
 func findRedeemBatchByOrderRef(ctx context.Context, tx pgx.Tx, source, orderRef string) (RedeemBatchItem, string, generationProduct, bool, error) {
