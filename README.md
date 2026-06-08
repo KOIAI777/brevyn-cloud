@@ -59,10 +59,10 @@ make docker-up-local
 open http://127.0.0.1:4000/admin
 ```
 
-Use the normal `docker compose up -d --build` path for production-like builds,
-because it verifies the full multi-stage image including the Node admin build.
-The compose stack runs a one-shot `migrate` service before the API and worker
-start.
+Use the normal `docker compose up -d --build` path for production-like local
+builds, because it verifies the full multi-stage image including the Node admin
+build. The compose stack runs a one-shot `migrate` service before the API and
+worker start.
 
 ## Production Notes
 
@@ -72,9 +72,14 @@ development defaults. Set `APP_ENV=production` and replace all secrets in
 `.env`. Production startup requires HTTPS, non-local values for `APP_BASE_URL`,
 `ADMIN_BASE_URL`, and `OFFICIAL_PROVIDER_BASE_URL`.
 
-For the first production version, deploy from GitHub source and build on the
-server. After the repository is cloned and `.env` is created on the server,
-updates can be applied with:
+Production uses the published GHCR image by default:
+
+```bash
+BREVYN_CLOUD_IMAGE=ghcr.io/koiai777/brevyn-cloud:latest
+```
+
+After the repository is cloned and `.env` is created on the server, updates can
+be applied with:
 
 ```bash
 cd /data/brevyn-cloud
@@ -82,9 +87,11 @@ bash scripts/update-server.sh
 ```
 
 The script fetches `origin/main`, performs a fast-forward merge, validates Docker
-Compose, creates a Postgres backup when the database is already running, rebuilds
-the services, waits for `/readyz`, and rolls back to the previous commit if the
-health check fails.
+Compose, creates a Postgres backup when the database is already running, pins
+`BREVYN_CLOUD_IMAGE` to the commit image tag such as
+`ghcr.io/koiai777/brevyn-cloud:sha-xxxxxxx`, restarts the services, and waits
+for `/readyz`. If you intentionally want to build on the server instead of
+pulling GHCR, run `UPDATE_MODE=build bash scripts/update-server.sh`.
 
 Do not use `CORS_ALLOWED_ORIGINS=*` or `ADMIN_ALLOWED_ORIGINS=*` in production.
 List exact HTTPS origins instead. `CORS_ALLOWED_ORIGINS` controls browser API

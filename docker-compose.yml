@@ -1,5 +1,6 @@
 services:
   api:
+    image: ${BREVYN_CLOUD_IMAGE:-ghcr.io/koiai777/brevyn-cloud:latest}
     build:
       context: .
     env_file:
@@ -51,6 +52,7 @@ services:
         condition: service_healthy
 
   migrate:
+    image: ${BREVYN_CLOUD_IMAGE:-ghcr.io/koiai777/brevyn-cloud:latest}
     build:
       context: .
     command: ["brevyn-migrate"]
@@ -92,6 +94,7 @@ services:
         condition: service_healthy
 
   worker:
+    image: ${BREVYN_CLOUD_IMAGE:-ghcr.io/koiai777/brevyn-cloud:latest}
     build:
       context: .
     command: ["brevyn-worker"]

@@ -6,6 +6,8 @@ BRANCH="${BRANCH:-main}"
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:4000/readyz}"
 LOCK_FILE="${LOCK_FILE:-/tmp/brevyn-cloud-update.lock}"
 COMPOSE="${COMPOSE:-docker compose}"
+UPDATE_MODE="${UPDATE_MODE:-image}"
+IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-ghcr.io/koiai777/brevyn-cloud}"
 POSTGRES_SERVICE="${POSTGRES_SERVICE:-postgres}"
 POSTGRES_USER="${POSTGRES_USER:-brevyn}"
 POSTGRES_DB="${POSTGRES_DB:-brevyn_cloud}"
@@ -29,6 +31,12 @@ fi
 
 OLD_COMMIT="$(git rev-parse HEAD)"
 log "current commit: $OLD_COMMIT"
+
+image_for_commit() {
+  printf '%s:sha-%s' "$IMAGE_REPOSITORY" "$(git rev-parse --short=7 "$1")"
+}
+
+OLD_IMAGE="$(image_for_commit "$OLD_COMMIT")"
 
 backup_database() {
   if ! $COMPOSE ps --status running --services | grep -qx "$POSTGRES_SERVICE"; then
@@ -56,20 +64,35 @@ wait_for_health() {
 rollback() {
   log "rolling back to $OLD_COMMIT"
   git reset --hard "$OLD_COMMIT"
-  $COMPOSE up -d --build
+  if [ "$UPDATE_MODE" = "build" ]; then
+    $COMPOSE up -d --build
+  else
+    export BREVYN_CLOUD_IMAGE="$OLD_IMAGE"
+    log "restart previous image: $BREVYN_CLOUD_IMAGE"
+    $COMPOSE pull api migrate worker || log "previous image pull failed; trying local cached image"
+    $COMPOSE up -d
+  fi
 }
 
 log "fetch latest code"
 git fetch origin "$BRANCH"
 git merge --ff-only "origin/$BRANCH"
+NEW_COMMIT="$(git rev-parse HEAD)"
 
 log "validate compose"
 $COMPOSE config --quiet
 
 backup_database
 
-log "build and restart services"
-$COMPOSE up -d --build
+if [ "$UPDATE_MODE" = "build" ]; then
+  log "build and restart services"
+  $COMPOSE up -d --build
+else
+  export BREVYN_CLOUD_IMAGE="$(image_for_commit "$NEW_COMMIT")"
+  log "pull GHCR image and restart services: $BREVYN_CLOUD_IMAGE"
+  $COMPOSE pull api migrate worker
+  $COMPOSE up -d
+fi
 
 if wait_for_health; then
   log "update succeeded: $(git rev-parse HEAD)"
