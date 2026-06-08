@@ -1,5 +1,6 @@
 import {
   Archive,
+  AlertTriangle,
   CalendarClock,
   ChevronDown,
   DatabaseBackup,
@@ -956,6 +957,14 @@ function BackupCenterPanel() {
         <div>
           <span>PG 客户端</span>
           <strong>{config?.pgDumpVersion || config?.pgRestoreVersion || "未检测到"}</strong>
+        </div>
+      </div>
+
+      <div className="backup-secret-warning">
+        <AlertTriangle size={18} />
+        <div>
+          <strong>数据库备份不能单独完成整站恢复</strong>
+          <p>请把服务器 `.env` 里的 ENCRYPTION_KEY、数据库密码、Sub2API 管理凭证和对象存储密钥一起离线保存；缺少原 ENCRYPTION_KEY 时，已保存的用户 Key 和官方配置密文无法解密。</p>
         </div>
       </div>
 

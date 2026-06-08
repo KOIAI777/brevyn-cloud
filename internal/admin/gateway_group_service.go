@@ -661,7 +661,7 @@ func (s *GatewayGroupService) activeOfficialCapabilityKeys(ctx context.Context) 
 		return nil, err
 	}
 	if len(keys) == 0 {
-		keys = []string{"embedding", "vision"}
+		keys = []string{"embedding", "vision", "ocr"}
 	}
 	return keys, nil
 }

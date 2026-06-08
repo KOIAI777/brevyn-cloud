@@ -328,10 +328,20 @@ func EnsureSchema(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config) e
 			min_client_version, enabled, sort_order
 		)
 		VALUES
-			('ocd_embedding', 'embedding', '向量检索', '课程资料语义检索、RAG 和知识库索引使用的文本向量能力。', 'custom-openai', 'openai_embedding', 'openai_compatible', '["embedding"]'::jsonb, '', true, 10),
-			('ocd_vision', 'vision', '视觉识别', '聊天、图片理解和轻量文档识别使用的视觉输入能力。', 'vision-custom-openai', 'openai_chat_completions', 'openai_compatible', '["vision_input"]'::jsonb, '', true, 20),
-			('ocd_ocr', 'ocr', '文档 OCR', '扫描 PDF、课件图片页和低文本覆盖页面进入索引前的 OCR 补充能力。', 'ocr-custom-openai', 'openai_chat_completions', 'openai_compatible', '["vision_input", "ocr"]'::jsonb, '0.2.8', true, 30)
-		ON CONFLICT (capability_key) DO NOTHING`,
+				('ocd_embedding', 'embedding', '向量检索', '课程资料语义检索、RAG 和知识库索引使用的文本向量能力。', 'custom-openai', 'openai_embedding', 'openai_compatible', '["embedding"]'::jsonb, '', true, 10),
+				('ocd_vision', 'vision', '视觉识别', '聊天、图片理解和轻量文档识别使用的视觉输入能力。', 'vision-custom-openai', 'openai_chat_completions', 'openai_compatible', '["vision_input"]'::jsonb, '', true, 20),
+				('ocd_ocr', 'ocr', '文档 OCR', '扫描 PDF、课件图片页和低文本覆盖页面进入索引前的 OCR 补充能力。', 'ocr-openai-responses', 'openai_responses', 'openai_responses', '["vision_input", "ocr", "document_parse", "table", "formula"]'::jsonb, '0.2.8', true, 30)
+			ON CONFLICT (capability_key) DO NOTHING`,
+		`UPDATE official_capability_definitions
+			SET provider_kind = 'ocr-openai-responses',
+				adapter_kind = 'openai_responses',
+				protocol = 'openai_responses',
+				model_hint_capabilities = '["vision_input", "ocr", "document_parse", "table", "formula"]'::jsonb,
+				updated_at = now()
+			WHERE capability_key = 'ocr'
+				AND provider_kind = 'ocr-custom-openai'
+				AND adapter_kind = 'openai_chat_completions'
+				AND protocol = 'openai_compatible'`,
 		`ALTER TABLE gateway_channels ADD COLUMN IF NOT EXISTS group_ids JSONB NOT NULL DEFAULT '[]'::jsonb`,
 		`ALTER TABLE gateway_channels ADD COLUMN IF NOT EXISTS model_pricing JSONB NOT NULL DEFAULT '[]'::jsonb`,
 		`ALTER TABLE gateway_channels ADD COLUMN IF NOT EXISTS pricing_count INT NOT NULL DEFAULT 0`,

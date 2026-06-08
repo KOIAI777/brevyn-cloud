@@ -2202,6 +2202,36 @@ code {
   font-weight: 800;
 }
 
+.backup-secret-warning {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 12px 14px;
+  border: 1px solid #dec98f;
+  background: #fff9ea;
+  color: #7a5b13;
+}
+
+.backup-secret-warning strong,
+.backup-secret-warning p {
+  margin: 0;
+}
+
+.backup-secret-warning strong {
+  display: block;
+  color: #3f310a;
+  font-size: 13px;
+}
+
+.backup-secret-warning p {
+  margin-top: 4px;
+  color: #76643a;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.55;
+}
+
 .backup-section {
   display: grid;
   gap: 14px;

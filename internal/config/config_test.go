@@ -63,12 +63,22 @@ func TestLoadRejectsProductionStartupMigrations(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsProductionDevelopmentSeedEmail(t *testing.T) {
+	setProductionEnv(t)
+	t.Setenv("ADMIN_SEED_EMAIL", "owner@brevyn.local")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "ADMIN_SEED_EMAIL") {
+		t.Fatalf("expected development seed email rejection, got %v", err)
+	}
+}
+
 func setProductionEnv(t *testing.T) {
 	t.Helper()
 	t.Setenv("APP_ENV", "production")
 	t.Setenv("APP_BASE_URL", "https://cloud.example.com")
 	t.Setenv("ADMIN_BASE_URL", "https://cloud.example.com/admin")
-	t.Setenv("OFFICIAL_PROVIDER_BASE_URL", "https://api.example.com")
+	t.Setenv("OFFICIAL_PROVIDER_BASE_URL", "https://api.example.com/v1")
 	t.Setenv("ENCRYPTION_KEY", "test-encryption-secret-123")
 	t.Setenv("SESSION_SECRET", "test-session-secret-123")
 	t.Setenv("JWT_ACCESS_SECRET", "test-access-secret-123")

@@ -813,6 +813,7 @@ func (h *Handler) officialCapabilityDefinitions(ctx context.Context) ([]official
 		items = []officialCapabilityDefinition{
 			{Key: "embedding", Name: "Embedding", ProviderKind: "custom-openai", AdapterKind: "openai_embedding", Protocol: "openai_compatible"},
 			{Key: "vision", Name: "Vision", ProviderKind: "vision-custom-openai", AdapterKind: "openai_chat_completions", Protocol: "openai_compatible"},
+			{Key: "ocr", Name: "Document OCR", ProviderKind: "ocr-openai-responses", AdapterKind: "openai_responses", Protocol: "openai_responses", ModelHintCapabilities: []string{"vision_input", "ocr", "document_parse", "table", "formula"}, MinClientVersion: "0.2.8"},
 		}
 	}
 	return items, nil

@@ -66,9 +66,11 @@ start.
 
 ## Production Notes
 
-Set `APP_ENV=production` and replace all secrets in `.env`. Production startup
-requires HTTPS, non-local values for `APP_BASE_URL`, `ADMIN_BASE_URL`, and
-`OFFICIAL_PROVIDER_BASE_URL`.
+Create a real `.env` before starting Docker Compose. The compose file requires
+the important deployment variables instead of silently falling back to
+development defaults. Set `APP_ENV=production` and replace all secrets in
+`.env`. Production startup requires HTTPS, non-local values for `APP_BASE_URL`,
+`ADMIN_BASE_URL`, and `OFFICIAL_PROVIDER_BASE_URL`.
 
 Do not use `CORS_ALLOWED_ORIGINS=*` or `ADMIN_ALLOWED_ORIGINS=*` in production.
 List exact HTTPS origins instead. `CORS_ALLOWED_ORIGINS` controls browser API
@@ -80,7 +82,7 @@ values that are allowed to provide `X-Forwarded-For`.
 Keep the two Sub2API URLs separate:
 
 - `OFFICIAL_PROVIDER_BASE_URL` is returned to clients and should be the public
-  model gateway, for example `https://api.brevyn.org`.
+  model gateway v1 base, for example `https://api.brevyn.org/v1`.
 - `SUB2API_BASE_URL` is used only by the API and worker to call Sub2API Admin
   APIs. It must be reachable from the containers, for example
   `http://sub2api:8080` on a shared Docker network or
@@ -127,6 +129,12 @@ The admin Settings page also includes a Cloud Backup Center. In Docker Compose,
 the API container writes local backups to `/app/backups/postgres`, mounted from
 `./backups`, and can optionally upload a second copy to S3-compatible storage
 such as Cloudflare R2.
+
+Database backups are not a complete disaster-recovery bundle by themselves.
+Keep the production `.env` or secret-manager export with the backups, especially
+`ENCRYPTION_KEY`, database credentials, Sub2API admin credentials, and S3/R2
+credentials. Stored user gateway keys and official-provider secrets cannot be
+decrypted after restore without the original `ENCRYPTION_KEY`.
 
 The API image must include PostgreSQL client tools whose major version is at
 least the database server major version. After upgrading Postgres, rebuild the

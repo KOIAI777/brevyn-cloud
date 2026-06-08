@@ -246,7 +246,7 @@ func (s *DiagnosticsService) productionReadiness(ctx context.Context, services S
 		readiness("gateway", "active-groups", "已同步分组", activeGroups > 0, fmt.Sprintf("%d active groups", activeGroups), "在设置页同步 Sub2API 分组"),
 		readiness("gateway", "active-models", "已同步模型", activeModels > 0, fmt.Sprintf("%d active models", activeModels), "确认 Sub2API 分组绑定账号/渠道后，在设置页同步模型"),
 		readiness("gateway", "schedulable-accounts", "可调度账号", schedulableAccounts > 0, fmt.Sprintf("%d schedulable accounts", schedulableAccounts), "在 Sub2API 分组里绑定可调度账号，然后同步模型"),
-		readiness("gateway", "official-provider-url", "客户端模型入口", officialProviderURLReady, officialProviderURLDetail, "配置 OFFICIAL_PROVIDER_BASE_URL 为公开 HTTPS Sub2API 入口，例如 https://api.brevyn.org"),
+		readiness("gateway", "official-provider-url", "客户端模型入口", officialProviderURLReady, officialProviderURLDetail, "配置 OFFICIAL_PROVIDER_BASE_URL 为公开 HTTPS Sub2API v1 入口，例如 https://api.brevyn.org/v1"),
 		readiness("queue", "queue-clear", "同步队列无阻塞", queue.DeadLetter == 0 && queue.StaleRunning == 0, fmt.Sprintf("%d dead / %d stale", queue.DeadLetter, queue.StaleRunning), "在队列页查看失败原因，修复后批量重试"),
 		readiness("security", "admin-totp", "管理员 TOTP", activeAdmins > 0 && totpAdmins >= activeAdmins, fmt.Sprintf("%d/%d admins enabled", totpAdmins, activeAdmins), "上线前给所有 active 管理员开启 TOTP"),
 		readiness("security", "production-secrets", "生产密钥", s.productionSecretsReady(settings), "secrets checked", "上线前替换开发默认密钥，并配置 HTTPS 域名"),

@@ -90,7 +90,7 @@ func Load() (*Config, error) {
 		AdminSeedPassword:            getenv("ADMIN_SEED_PASSWORD", "Brevyn@Admin2026"),
 		OfficialProviderBaseURL: getenv(
 			"OFFICIAL_PROVIDER_BASE_URL",
-			"https://api.brevyn.org",
+			"https://api.brevyn.org/v1",
 		),
 		OfficialProviderDefaultModel: getenv("OFFICIAL_PROVIDER_DEFAULT_MODEL", ""),
 	}
@@ -151,6 +151,9 @@ func (c *Config) validateProduction() error {
 		if len(value) < 16 {
 			return fmt.Errorf("%s must be at least 16 characters in production", name)
 		}
+	}
+	if isKnownDevelopmentEmail(c.AdminSeedEmail) {
+		return fmt.Errorf("ADMIN_SEED_EMAIL must be changed from the development default in production")
 	}
 	if slicesContains(c.AllowedOrigins, "*") {
 		return fmt.Errorf("CORS_ALLOWED_ORIGINS must not contain * in production")
@@ -253,6 +256,11 @@ func isKnownDevelopmentSecret(value string) bool {
 	default:
 		return false
 	}
+}
+
+func isKnownDevelopmentEmail(value string) bool {
+	email := strings.ToLower(strings.TrimSpace(value))
+	return email == "owner@brevyn.local" || strings.HasSuffix(email, ".local")
 }
 
 func getenv(key, fallback string) string {

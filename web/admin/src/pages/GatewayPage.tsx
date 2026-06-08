@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Boxes, ChevronDown, ChevronRight, Database, Eye, KeyRound, Network, Route, Save, Server, ShieldCheck } from "lucide-react";
+import { Boxes, ChevronDown, ChevronRight, Database, Eye, FileSearch, KeyRound, Network, Route, Save, Server, ShieldCheck } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { PageHeader } from "../components/PageHeader";
 import { StatGrid } from "../components/StatGrid";
@@ -214,6 +214,19 @@ const fallbackOfficialCapabilityDefinitions: OfficialCapabilityDefinition[] = [
     minClientVersion: "",
     enabled: true,
     sortOrder: 20
+  },
+  {
+    id: "fallback-ocr",
+    key: "ocr",
+    name: "文档 OCR",
+    description: "",
+    providerKind: "ocr-openai-responses",
+    adapterKind: "openai_responses",
+    protocol: "openai_responses",
+    modelHintCapabilities: ["vision_input", "ocr", "document_parse", "table", "formula"],
+    minClientVersion: "0.2.8",
+    enabled: true,
+    sortOrder: 30
   }
 ];
 
@@ -634,7 +647,7 @@ function OfficialModelConfigPanel({ group }: { group: GatewayGroup }) {
           <OfficialPurposeEditor
             key={definition.key}
             definition={definition}
-            icon={definition.key === "embedding" ? <Database size={15} aria-hidden="true" /> : definition.key === "vision" ? <Eye size={15} aria-hidden="true" /> : <ShieldCheck size={15} aria-hidden="true" />}
+            icon={definition.key === "embedding" ? <Database size={15} aria-hidden="true" /> : definition.key === "vision" ? <Eye size={15} aria-hidden="true" /> : definition.key === "ocr" ? <FileSearch size={15} aria-hidden="true" /> : <ShieldCheck size={15} aria-hidden="true" />}
             models={group.models}
             config={draft[definition.key] ?? normalizedPurposeConfig()}
             onChange={(config) => setDraft((current) => ({ ...current, [definition.key]: config }))}
