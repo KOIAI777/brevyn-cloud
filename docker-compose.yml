@@ -3,6 +3,7 @@ services:
     image: ${BREVYN_CLOUD_IMAGE:-ghcr.io/koiai777/brevyn-cloud:latest}
     build:
       context: .
+    restart: unless-stopped
     env_file:
       - path: .env
         required: false
@@ -98,6 +99,7 @@ services:
     build:
       context: .
     command: ["brevyn-worker"]
+    restart: unless-stopped
     env_file:
       - path: .env
         required: false
@@ -141,6 +143,7 @@ services:
 
   postgres:
     image: postgres:18-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: brevyn_cloud
       POSTGRES_USER: brevyn
@@ -157,6 +160,7 @@ services:
 
   redis:
     image: redis:8-alpine
+    restart: unless-stopped
     ports:
       - "127.0.0.1:6380:6379"
     volumes:
