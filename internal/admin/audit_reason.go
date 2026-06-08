@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -41,7 +40,7 @@ func requireAuditReason(c *gin.Context, auditReason string, reason string) (stri
 
 func normalizeAuditReason(values ...string) string {
 	for _, value := range values {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
+		if trimmed := sanitizeDatabaseText(value); trimmed != "" {
 			return trimmed
 		}
 	}
@@ -63,8 +62,8 @@ func auditMetadataWithReason(reason string, fields map[string]any) string {
 	if fields == nil {
 		fields = map[string]any{}
 	}
-	if strings.TrimSpace(reason) != "" {
-		fields["reason"] = strings.TrimSpace(reason)
+	if sanitized := sanitizeDatabaseText(reason); sanitized != "" {
+		fields["reason"] = sanitized
 	}
 	return auditMetadata(fields)
 }

@@ -305,13 +305,14 @@ function errorMessage(error: unknown, fallback: string) {
 }
 
 function translateRedeemError(value: string) {
-  const code = value.includes(":") ? value.split(":").pop()?.trim() ?? value : value.trim();
   const map: Record<string, string> = {
+    invalid_text_input: "输入内容包含隐藏非法字符，请重新粘贴或删除后再试",
     audit_reason_required: "请填写操作原因",
     audit_reason_too_long: "操作原因过长",
     order_ref_required: "请填写订单/批次编号",
     product_required: "请选择商品",
     count_out_of_range: "生成数量必须在 1 到 500 之间",
+    count_must_be_1_to_500: "生成数量必须在 1 到 500 之间",
     product_not_active: "商品未启用",
     product_not_for_sale: "商品未上架",
     product_gateway_group_not_active: "商品绑定的分组未启用",
@@ -331,6 +332,8 @@ function translateRedeemError(value: string) {
     validity_days_required: "订阅商品有效期必须大于 0",
     gateway_group_not_found: "绑定分组不存在"
   };
+  const parts = value.split(":").map((part) => part.trim()).filter(Boolean);
+  const code = parts.find((part) => part in map) ?? parts[parts.length - 1] ?? value.trim();
   return map[code] ?? value;
 }
 

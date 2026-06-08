@@ -356,6 +356,7 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 		return
 	}
+	sanitizeProductRequest(&req)
 	auditReason, ok := requireAuditReason(c, req.AuditReason, req.Reason)
 	if !ok {
 		return
@@ -367,6 +368,9 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 		if isProductValidationError(err) {
 			status = http.StatusBadRequest
 			errorCode = err.Error()
+		} else if isPostgresInvalidTextError(err) {
+			status = http.StatusBadRequest
+			errorCode = invalidTextInputError
 		}
 		c.JSON(status, gin.H{"error": errorCode})
 		return
@@ -388,6 +392,7 @@ func (h *Handler) UpdateProduct(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 		return
 	}
+	sanitizeProductRequest(&req)
 	auditReason, ok := requireAuditReason(c, req.AuditReason, req.Reason)
 	if !ok {
 		return
@@ -403,6 +408,9 @@ func (h *Handler) UpdateProduct(c *gin.Context) {
 		if isProductValidationError(err) {
 			status = http.StatusBadRequest
 			errorCode = err.Error()
+		} else if isPostgresInvalidTextError(err) {
+			status = http.StatusBadRequest
+			errorCode = invalidTextInputError
 		}
 		c.JSON(status, gin.H{"error": errorCode})
 		return
@@ -594,12 +602,8 @@ func (h *Handler) GenerateRedeemCodes(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_request"})
 		return
 	}
-	req.ProductID = strings.TrimSpace(req.ProductID)
-	req.BatchName = strings.TrimSpace(req.BatchName)
-	req.Source = strings.TrimSpace(req.Source)
-	req.OrderRef = strings.TrimSpace(req.OrderRef)
-	req.Notes = strings.TrimSpace(req.Notes)
-	req.IdempotencyKey = firstNonEmpty(c.GetHeader("Idempotency-Key"), req.IdempotencyKey)
+	sanitizeGenerateRedeemCodesRequest(&req)
+	req.IdempotencyKey = sanitizeDatabaseText(firstNonEmpty(c.GetHeader("Idempotency-Key"), req.IdempotencyKey))
 	auditReason, ok := requireAuditReason(c, req.AuditReason, req.Reason)
 	if !ok {
 		return
@@ -647,6 +651,10 @@ func (h *Handler) GenerateRedeemCodes(c *gin.Context) {
 		status := http.StatusInternalServerError
 		if isRedeemGenerationValidationError(err) {
 			status = http.StatusBadRequest
+		} else if isPostgresInvalidTextError(err) {
+			status = http.StatusBadRequest
+			c.JSON(status, gin.H{"error": invalidTextInputError, "detail": "输入内容包含隐藏非法字符，请重新粘贴或删除后再试"})
+			return
 		}
 		c.JSON(status, gin.H{"error": "generate_failed", "detail": err.Error()})
 		return
