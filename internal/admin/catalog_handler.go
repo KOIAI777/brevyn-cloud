@@ -604,6 +604,9 @@ func (h *Handler) GenerateRedeemCodes(c *gin.Context) {
 	}
 	sanitizeGenerateRedeemCodesRequest(&req)
 	req.IdempotencyKey = sanitizeDatabaseText(firstNonEmpty(c.GetHeader("Idempotency-Key"), req.IdempotencyKey))
+	if req.AuditReason == "" && req.Reason == "" {
+		req.AuditReason = "后台快速生成兑换码"
+	}
 	auditReason, ok := requireAuditReason(c, req.AuditReason, req.Reason)
 	if !ok {
 		return
@@ -617,14 +620,13 @@ func (h *Handler) GenerateRedeemCodes(c *gin.Context) {
 		return
 	}
 	if req.BatchName == "" {
-		req.BatchName = "manual-" + time.Now().Format("20060102-150405")
+		req.BatchName = "快速生成-" + time.Now().Format("20060102-150405")
 	}
 	if req.Source == "" {
-		req.Source = "ldxp"
+		req.Source = "admin_quick"
 	}
 	if req.OrderRef == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "order_ref_required"})
-		return
+		req.OrderRef = generateRedeemBatchOrderRef(time.Now())
 	}
 	expiresAt, err := resolveCodeExpiry(req.ExpiresAt, req.ExpiresInDays)
 	if err != nil {
@@ -933,6 +935,11 @@ func generateCodeValue() (string, error) {
 	raw := strings.ToUpper(hex.EncodeToString(bytes))
 	parts := []string{raw[0:8], raw[8:16], raw[16:24], raw[24:32]}
 	return "BVN-" + strings.Join(parts, "-"), nil
+}
+
+func generateRedeemBatchOrderRef(now time.Time) string {
+	suffix := strings.ToUpper(strings.ReplaceAll(uuid.NewString(), "-", "")[:8])
+	return "BATCH-" + now.Format("20060102-150405") + "-" + suffix
 }
 
 func hashCode(code string) string {

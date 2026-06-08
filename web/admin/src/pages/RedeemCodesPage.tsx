@@ -44,6 +44,7 @@ function formatProductStatus(product: Product) {
 
 const sourcePresets = [
   { value: "ldxp", label: "联动小铺" },
+  { value: "admin_quick", label: "快速生成" },
   { value: "manual", label: "手动" },
   { value: "promo", label: "活动赠送" }
 ];
@@ -434,12 +435,7 @@ export function RedeemCodesPage() {
   const [isProductEditorOpen, setProductEditorOpen] = useState(false);
   const [productForm, setProductForm] = useState<ProductInput>(emptyProductForm);
   const [count, setCount] = useState(10);
-  const [batchName, setBatchName] = useState("");
-  const [source, setSource] = useState("ldxp");
-  const [orderRef, setOrderRef] = useState("");
   const [batchNotes, setBatchNotes] = useState("");
-  const [batchAuditReason, setBatchAuditReason] = useState("");
-  const [expiresInDays, setExpiresInDays] = useState("");
   const [productAuditReason, setProductAuditReason] = useState("");
   const [batchSearch, setBatchSearch] = useState("");
   const [batchStatus, setBatchStatus] = useState("all");
@@ -592,17 +588,11 @@ export function RedeemCodesPage() {
       generateRedeemCodes({
         productId,
         count,
-        batchName,
-        source: source.trim() || "ldxp",
-        orderRef: orderRef.trim(),
-        notes: batchNotes,
-        expiresInDays: expiresInDays ? Number(expiresInDays) : undefined,
-        auditReason: batchAuditReason.trim()
+        notes: batchNotes
       }),
     onSuccess: async (result) => {
       setGenerated(result);
       setCopyNotice("");
-      setBatchAuditReason("");
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["admin-redeem-codes"] }),
         queryClient.invalidateQueries({ queryKey: ["admin-redeem-batches"] }),
@@ -682,8 +672,6 @@ export function RedeemCodesPage() {
     Boolean(productId) &&
     count > 0 &&
     count <= 500 &&
-    orderRef.trim() !== "" &&
-    batchAuditReason.trim() !== "" &&
     selectedProductGuard.blocking.length === 0 &&
     !generate.isPending;
   const canSaveProduct =
@@ -809,13 +797,13 @@ export function RedeemCodesPage() {
 
       <RedeemStepSection
         step="1"
-        title="生成批次"
-        detail="选择商品、数量、来源和订单信息后生成卡密。"
+        title="快速生成"
+        detail="选择商品和数量即可生成一批卡密，批次编号、来源和审计原因由系统自动记录。"
         status={<StatusBadge tone={selectedProduct ? "ok" : "warn"}>{selectedProduct ? selectedProduct.benefitType : "select product"}</StatusBadge>}
         actions={
           <button className="primary-action" disabled={!canGenerate} onClick={() => generate.mutate()} type="button">
             <Plus size={16} />
-            <span>{generate.isPending ? "生成中" : "生成批次"}</span>
+            <span>{generate.isPending ? "生成中" : "快速生成"}</span>
           </button>
         }
       >
@@ -841,57 +829,12 @@ export function RedeemCodesPage() {
               value={count}
             />
           </label>
-          <label>
-            批次名
-            <input
-              onChange={(event) => setBatchName(event.target.value)}
-              placeholder="ldxp-0528-student"
-              value={batchName}
-            />
-          </label>
-          <label>
-            来源
-            <input
-              onChange={(event) => setSource(event.target.value)}
-              placeholder="联动小铺 / campus-a / agent-01"
-              value={source}
-            />
-            <SourcePresetButtons onSelect={setSource} />
-            <span className="field-hint">可输入自定义来源；常用值会保留为建议。</span>
-          </label>
-          <label>
-            卡密过期天数
-            <input
-              min={1}
-              onChange={(event) => setExpiresInDays(event.target.value)}
-              placeholder="不填则不过期"
-              type="number"
-              value={expiresInDays}
-            />
-          </label>
-          <label>
-            订单/批次编号
-            <input
-              onChange={(event) => setOrderRef(event.target.value)}
-              placeholder="例如：LDXP-20260601-001 / PROMO-0601"
-              value={orderRef}
-            />
-            <span className="field-hint">同一来源下编号只能生成一次，重复提交会返回已有批次。</span>
-          </label>
           <label className="wide-field">
-            内部备注
+            备注（可选）
             <textarea
               onChange={(event) => setBatchNotes(event.target.value)}
-              placeholder="买家备注、发货批次说明，仅供运营追踪"
+              placeholder="例如：给用户补发 / 活动赠送 / 客服备注，仅供运营追踪"
               value={batchNotes}
-            />
-          </label>
-          <label className="wide-field">
-            操作原因
-            <textarea
-              onChange={(event) => setBatchAuditReason(event.target.value)}
-              placeholder="例如：联动小铺订单发货 / 活动批量赠送"
-              value={batchAuditReason}
             />
           </label>
           <div className="field-summary">
@@ -961,7 +904,7 @@ export function RedeemCodesPage() {
         >
           {generated ? (
             <>
-              {generated.batch.orderRef ? <div className="batch-note-preview">联动小铺订单号：{generated.batch.orderRef}</div> : null}
+              {generated.batch.orderRef ? <div className="batch-note-preview">批次编号：{generated.batch.orderRef}</div> : null}
               {generated.batch.notes ? <div className="batch-note-preview">{generated.batch.notes}</div> : null}
               {copyNotice ? <div className="form-success">{copyNotice}</div> : null}
               <textarea readOnly className="code-output" value={generatedText} />
@@ -1369,7 +1312,7 @@ export function RedeemCodesPage() {
               { key: "name", header: "批次", render: (row) => row.name },
               { key: "product", header: "商品", render: (row) => row.productName || "-" },
               { key: "source", header: "来源", render: (row) => formatSourceLabel(row.source) },
-              { key: "orderRef", header: "订单号", render: (row) => row.orderRef || "-" },
+              { key: "orderRef", header: "批次编号", render: (row) => row.orderRef || "-" },
               { key: "quantity", header: "数量", render: (row) => row.quantity, align: "right" },
               { key: "unused", header: "未用", render: (row) => row.unusedCount, align: "right" },
               { key: "used", header: "已用", render: (row) => row.usedCount, align: "right" },
@@ -1576,7 +1519,7 @@ export function RedeemCodesPage() {
           },
           { key: "source", header: "来源", render: (row) => formatSourceLabel(row.source) },
           { key: "batch", header: "批次", render: (row) => row.batchName || "-" },
-          { key: "orderRef", header: "订单号", render: (row) => row.orderRef || "-" },
+          { key: "orderRef", header: "批次编号", render: (row) => row.orderRef || "-" },
           {
             key: "notes",
             header: "备注",

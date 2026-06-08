@@ -808,8 +808,8 @@ export type AuditLog = {
 export type GenerateRedeemCodesInput = {
   productId: string;
   count: number;
-  batchName: string;
-  source: string;
+  batchName?: string;
+  source?: string;
   orderRef?: string;
   notes?: string;
   expiresInDays?: number;
