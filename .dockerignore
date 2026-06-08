@@ -1,8 +1,13 @@
-.env
+.DS_Store
+.env*
+!.env.example
 .git
 bin/
 tmp/
 backups/
+coverage.out
+web/.DS_Store
+web/admin/.DS_Store
 web/admin/node_modules/
 web/admin/dist/
 !web/admin/dist/
