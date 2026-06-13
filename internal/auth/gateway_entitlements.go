@@ -18,7 +18,7 @@ import (
 const (
 	gatewayEntitlementsCacheTTL      = 30 * time.Second
 	gatewayEntitlementsStaleCacheTTL = 10 * time.Minute
-	gatewayEntitlementsForceTTL      = 15 * time.Second
+	gatewayEntitlementsForceTTL      = 30 * time.Second
 )
 
 type gatewayEntitlementsResponse struct {

@@ -250,46 +250,15 @@ func (h *Handler) Register(c *gin.Context) {
 		return
 	}
 
-	var gateway *gatewayAccountSummary
-	var apiKey *apiKeySummary
-	gatewayWarning := ""
-	gatewayWarningCode := ""
-	gatewayStatus := "ready"
-	gatewayOperation := ""
-	if credential, err := h.tryImmediateGatewayProvision(c.Request.Context(), user); err != nil {
-		gatewayWarningCode = safeGatewayProvisionCode(err)
-		gatewayWarning = safeGatewayProvisionMessage(gatewayWarningCode)
-		gatewayStatus = "pending"
-		if shouldQueueGatewayProvision(err) {
-			if opID, queueErr := h.enqueueGatewayProvision(c.Request.Context(), user, err); queueErr == nil {
-				gatewayOperation = opID
-			} else {
-				gatewayStatus = "failed"
-				gatewayWarningCode = "gateway_provision_queue_failed"
-				gatewayWarning = safeGatewayProvisionMessage(gatewayWarningCode)
-			}
-		} else {
-			gatewayStatus = "failed"
-		}
-	} else {
-		account := gatewayAccountResponse(credential.Account)
-		gateway = &account
-		apiKey = gatewayAPIKeyPointerResponse(credential.APIKey)
-	}
-
 	response := gin.H{
 		"user":               user,
 		"tokens":             tokens,
-		"gateway":            gateway,
-		"apiKey":             apiKey,
-		"gatewayStatus":      gatewayStatus,
-		"gatewayOperation":   gatewayOperation,
-		"gatewayWarning":     gatewayWarning,
-		"gatewayWarningCode": gatewayWarningCode,
-	}
-	if gatewayWarning != "" {
-		c.JSON(http.StatusAccepted, response)
-		return
+		"gateway":            nil,
+		"apiKey":             nil,
+		"gatewayStatus":      "locked",
+		"gatewayOperation":   "",
+		"gatewayWarning":     "",
+		"gatewayWarningCode": "",
 	}
 	c.JSON(http.StatusCreated, response)
 }
@@ -897,7 +866,26 @@ func (h *Handler) ModelCatalog(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "group_permission_query_failed"})
 			return
 		}
-		if !allowed && requestedGroupID != h.defaultOfficialProviderGroupID(c.Request.Context(), user.ID) {
+		if officialGroup, err := h.groupHasOfficialCapabilities(c.Request.Context(), requestedGroupID); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "official_capability_query_failed"})
+			return
+		} else if officialGroup {
+			eligible, err := h.userHasOfficialCapabilityEntitlement(c.Request.Context(), user.ID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "official_capability_query_failed"})
+				return
+			}
+			if !eligible {
+				writeOfficialGatewayCredentialError(c, officialGatewayCredentialError{
+					Status: http.StatusAccepted,
+					Code:   "official_capability_not_active",
+					Err:    errors.New("official capability requires a balance package"),
+				})
+				return
+			}
+		}
+		officialGroupID := h.defaultOfficialProviderGroupID(c.Request.Context(), user.ID)
+		if !allowed && requestedGroupID != officialGroupID {
 			writeAuthAPIError(c, http.StatusForbidden, "group_not_available", "当前账号无权查看该分组模型")
 			return
 		}
@@ -906,9 +894,9 @@ func (h *Handler) ModelCatalog(c *gin.Context) {
 		credentialGroupID = h.defaultOfficialProviderGroupID(c.Request.Context(), user.ID)
 		if credentialGroupID == 0 {
 			writeOfficialGatewayCredentialError(c, officialGatewayCredentialError{
-				Status: http.StatusConflict,
-				Code:   "default_gateway_group_not_configured",
-				Err:    errors.New("default gateway group is not configured"),
+				Status: http.StatusAccepted,
+				Code:   "official_capability_not_active",
+				Err:    errors.New("official capability requires a balance package"),
 			})
 			return
 		}
@@ -1317,11 +1305,6 @@ func (h *Handler) userExternalGroupIDs(ctx context.Context, userID int64) ([]int
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	if len(groupIDs) == 0 {
-		if defaultGroupID := h.gatewaySync.DefaultExternalGroupID(ctx); defaultGroupID > 0 {
-			groupIDs = append(groupIDs, defaultGroupID)
-		}
-	}
 	if officialGroupID := h.officialCapabilityGroupID(ctx, userID); officialGroupID > 0 {
 		exists := false
 		for _, groupID := range groupIDs {
@@ -1443,12 +1426,27 @@ func (h *Handler) resolveOfficialProviderGroupID(ctx context.Context, user Princ
 		groupID := h.defaultOfficialProviderGroupID(ctx, user.ID)
 		if groupID <= 0 {
 			return 0, officialGatewayCredentialError{
-				Status: http.StatusConflict,
-				Code:   "default_gateway_group_not_configured",
-				Err:    errors.New("default gateway group is not configured"),
+				Status: http.StatusAccepted,
+				Code:   "official_capability_not_active",
+				Err:    errors.New("official capability requires a balance package"),
 			}
 		}
 		return groupID, nil
+	}
+	eligible, err := h.userHasOfficialCapabilityEntitlement(ctx, user.ID)
+	if err != nil {
+		return 0, officialGatewayCredentialError{
+			Status: http.StatusInternalServerError,
+			Code:   "official_capability_query_failed",
+			Err:    err,
+		}
+	}
+	if !eligible {
+		return 0, officialGatewayCredentialError{
+			Status: http.StatusAccepted,
+			Code:   "official_capability_not_active",
+			Err:    errors.New("official capability requires a balance package"),
+		}
 	}
 	requestedGroupID, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || requestedGroupID <= 0 {
@@ -1456,6 +1454,21 @@ func (h *Handler) resolveOfficialProviderGroupID(ctx context.Context, user Princ
 			Status: http.StatusBadRequest,
 			Code:   "invalid_external_group_id",
 			Err:    errors.New("externalGroupId is invalid"),
+		}
+	}
+	officialGroup, err := h.groupHasOfficialCapabilities(ctx, requestedGroupID)
+	if err != nil {
+		return 0, officialGatewayCredentialError{
+			Status: http.StatusInternalServerError,
+			Code:   "official_capability_query_failed",
+			Err:    err,
+		}
+	}
+	if !officialGroup {
+		return 0, officialGatewayCredentialError{
+			Status: http.StatusForbidden,
+			Code:   "group_not_official_capability",
+			Err:    errors.New("requested group does not expose official capabilities"),
 		}
 	}
 	allowed, err := h.userOwnsExternalGroup(ctx, user.ID, requestedGroupID)
@@ -1477,27 +1490,67 @@ func (h *Handler) resolveOfficialProviderGroupID(ctx context.Context, user Princ
 }
 
 func (h *Handler) defaultOfficialProviderGroupID(ctx context.Context, userID int64) int64 {
-	if groupID := h.officialCapabilityGroupID(ctx, userID); groupID > 0 {
-		return groupID
-	}
-	return h.gatewaySync.DefaultExternalGroupID(ctx)
+	return h.officialCapabilityGroupID(ctx, userID)
 }
 
 func (h *Handler) officialCapabilityGroupID(ctx context.Context, userID int64) int64 {
-	if account, err := h.gatewaySync.GatewayAccount(ctx, userID); err == nil && account != nil && account.DefaultGroupID > 0 {
-		if ok, _ := h.groupHasOfficialCapabilities(ctx, account.DefaultGroupID); ok {
-			return account.DefaultGroupID
-		}
+	eligible, err := h.userHasOfficialCapabilityEntitlement(ctx, userID)
+	if err != nil || !eligible {
+		return 0
 	}
-	if defaultGroupID := h.gatewaySync.DefaultExternalGroupID(ctx); defaultGroupID > 0 {
-		if ok, _ := h.groupHasOfficialCapabilities(ctx, defaultGroupID); ok {
-			return defaultGroupID
-		}
+	if groupID, err := h.userOfficialCapabilityGroupID(ctx, userID); err == nil && groupID > 0 {
+		return groupID
 	}
 	if groupID, err := h.firstOfficialCapabilityGroupID(ctx); err == nil && groupID > 0 {
 		return groupID
 	}
 	return 0
+}
+
+func (h *Handler) userHasOfficialCapabilityEntitlement(ctx context.Context, userID int64) (bool, error) {
+	var exists bool
+	err := h.postgres.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM redeem_redemptions
+			WHERE user_id = $1
+				AND kind = 'balance'
+				AND value > 0
+				AND status = 'synced'
+		)
+	`, userID).Scan(&exists)
+	return exists, err
+}
+
+func (h *Handler) userOfficialCapabilityGroupID(ctx context.Context, userID int64) (int64, error) {
+	var groupID int64
+	err := h.postgres.QueryRow(ctx, `
+		WITH owned AS (
+			SELECT default_group_id AS external_group_id, 0 AS priority
+			FROM gateway_accounts
+			WHERE user_id = $1 AND provider = 'sub2api' AND status = 'active' AND default_group_id > 0
+			UNION ALL
+			SELECT external_group_id, 1 AS priority
+			FROM gateway_api_keys
+			WHERE user_id = $1 AND provider = 'sub2api' AND status = 'active' AND external_group_id > 0
+		)
+		SELECT owned.external_group_id
+		FROM owned
+		JOIN gateway_group_model_roles ggmr
+			ON ggmr.provider = 'sub2api' AND ggmr.external_group_id = owned.external_group_id
+		JOIN official_capability_definitions ocd
+			ON ocd.capability_key = ggmr.purpose AND ocd.enabled = true
+		JOIN gateway_groups gg
+			ON gg.provider = ggmr.provider AND gg.external_group_id = ggmr.external_group_id
+		WHERE ggmr.enabled = true
+			AND gg.status = 'active'
+		ORDER BY owned.priority ASC, owned.external_group_id ASC
+		LIMIT 1
+	`, userID).Scan(&groupID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	return groupID, err
 }
 
 func (h *Handler) groupHasOfficialCapabilities(ctx context.Context, externalGroupID int64) (bool, error) {
@@ -1657,6 +1710,19 @@ func (h *Handler) ensureOfficialGatewayCredentialForGroup(ctx context.Context, u
 		externalGroupID = h.defaultOfficialProviderGroupID(ctx, user.ID)
 	}
 	if externalGroupID == 0 {
+		if eligible, err := h.userHasOfficialCapabilityEntitlement(ctx, user.ID); err != nil {
+			return officialGatewayCredential{}, officialGatewayCredentialError{
+				Status: http.StatusInternalServerError,
+				Code:   "official_capability_query_failed",
+				Err:    err,
+			}
+		} else if !eligible {
+			return officialGatewayCredential{}, officialGatewayCredentialError{
+				Status: http.StatusAccepted,
+				Code:   "official_capability_not_active",
+				Err:    errors.New("official capability requires a balance package"),
+			}
+		}
 		return officialGatewayCredential{}, officialGatewayCredentialError{
 			Status: http.StatusConflict,
 			Code:   "default_gateway_group_not_configured",
@@ -1740,7 +1806,11 @@ func writeOfficialGatewayCredentialError(c *gin.Context, err error) {
 		code := safeGatewayProvisionCode(err)
 		payload := gin.H{"error": code, "detail": safeGatewayProvisionMessage(code)}
 		if credentialErr.Status == http.StatusAccepted {
-			payload["status"] = "provisioning"
+			if code == "official_capability_not_active" {
+				payload["status"] = "locked"
+			} else {
+				payload["status"] = "provisioning"
+			}
 			if credentialErr.RetryAfter > 0 {
 				payload["retryAfterSeconds"] = int((credentialErr.RetryAfter + time.Second - 1) / time.Second)
 			}
@@ -1774,6 +1844,12 @@ func safeGatewayProvisionMessage(code string) string {
 		return "官方配置后台同步入队失败，请联系支持"
 	case "default_gateway_group_not_configured":
 		return "官方网关默认分组未配置，请联系支持"
+	case "official_capability_not_active":
+		return "兑换余额套餐后可启用官方模型配置"
+	case "official_capability_query_failed":
+		return "暂时无法校验官方能力资格，请稍后重试"
+	case "group_not_official_capability":
+		return "该分组未配置官方模型能力"
 	case "invalid_external_group_id":
 		return "分组 ID 不正确"
 	case "group_not_available":
@@ -2453,7 +2529,7 @@ func (l *providerLimiter) allowRead(ctx context.Context, ip string, userID int64
 		return 0, false, nil
 	}
 	rules := []providerLimitRule{
-		{key: "brevyn:rl:provider:read:user:" + strconv.FormatInt(userID, 10), limit: 60, window: 10 * time.Minute},
+		{key: "brevyn:rl:provider:read:user:" + strconv.FormatInt(userID, 10), limit: 120, window: 10 * time.Minute},
 		{key: "brevyn:rl:provider:read:ip:" + hashRateLimitPart(ip), limit: 180, window: 10 * time.Minute},
 	}
 	return incrementProviderLimitRules(ctx, l.redis, rules)
@@ -2464,7 +2540,7 @@ func (l *providerLimiter) allowProvision(ctx context.Context, userID int64, exte
 		return 0, false, nil
 	}
 	rules := []providerLimitRule{
-		{key: "brevyn:rl:provider:provision:user_group:" + strconv.FormatInt(userID, 10) + ":" + strconv.FormatInt(externalGroupID, 10), limit: 3, window: 10 * time.Minute},
+		{key: "brevyn:rl:provider:provision:user_group:" + strconv.FormatInt(userID, 10) + ":" + strconv.FormatInt(externalGroupID, 10), limit: 10, window: 10 * time.Minute},
 	}
 	return incrementProviderLimitRules(ctx, l.redis, rules)
 }
