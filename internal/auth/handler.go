@@ -260,10 +260,40 @@ func (h *Handler) Register(c *gin.Context) {
 		"gatewayWarning":     "",
 		"gatewayWarningCode": "",
 	}
+	defaultGroupID := h.gatewaySync.DefaultExternalGroupID(c.Request.Context())
+	credential, provisionErr := h.tryImmediateGatewayProvision(c.Request.Context(), user, defaultGroupID)
+	if provisionErr == nil {
+		response["gateway"] = gatewayAccountResponse(credential.Account)
+		response["apiKey"] = gatewayAPIKeyPointerResponse(credential.APIKey)
+		response["gatewayStatus"] = "ready"
+	} else if defaultGroupID > 0 {
+		operationID, queueErr := h.enqueueGatewayProvisionForGroup(c.Request.Context(), user, defaultGroupID, provisionErr)
+		if queueErr != nil {
+			response["gatewayStatus"] = "provisioning_failed"
+			response["gatewayWarning"] = "账号已创建，默认模型分组暂未准备完成，请稍后刷新。"
+			response["gatewayWarningCode"] = "gateway_provision_queue_failed"
+		} else {
+			response["gatewayStatus"] = "provisioning"
+			response["gatewayOperation"] = operationID
+			response["gatewayWarning"] = "账号已创建，默认模型分组正在后台准备。"
+			response["gatewayWarningCode"] = safeGatewayProvisionCode(provisionErr)
+		}
+	} else {
+		response["gatewayStatus"] = "provisioning"
+		response["gatewayWarning"] = "账号已创建，默认模型分组尚未配置，请稍后刷新。"
+		response["gatewayWarningCode"] = safeGatewayProvisionCode(provisionErr)
+	}
 	c.JSON(http.StatusCreated, response)
 }
 
-func (h *Handler) tryImmediateGatewayProvision(ctx context.Context, user Principal) (officialGatewayCredential, error) {
+func (h *Handler) tryImmediateGatewayProvision(ctx context.Context, user Principal, defaultGroupID int64) (officialGatewayCredential, error) {
+	if defaultGroupID <= 0 {
+		return officialGatewayCredential{}, officialGatewayCredentialError{
+			Status: http.StatusConflict,
+			Code:   "default_gateway_group_not_configured",
+			Err:    errors.New("default gateway group is not configured"),
+		}
+	}
 	if h.provisionSlots != nil {
 		select {
 		case h.provisionSlots <- struct{}{}:
@@ -278,7 +308,7 @@ func (h *Handler) tryImmediateGatewayProvision(ctx context.Context, user Princip
 	}
 	provisionCtx, cancelProvision := context.WithTimeout(ctx, 3*time.Second)
 	defer cancelProvision()
-	return h.ensureOfficialGatewayCredential(provisionCtx, user)
+	return h.ensureOfficialGatewayCredentialForGroup(provisionCtx, user, defaultGroupID)
 }
 
 func (h *Handler) Login(c *gin.Context) {

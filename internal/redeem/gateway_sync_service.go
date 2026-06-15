@@ -472,7 +472,7 @@ func (s *GatewaySyncService) EnsureSub2APIAccountForGroup(ctx context.Context, c
 		if concurrency <= 0 {
 			concurrency = ManagedUserConcurrency
 		}
-		if externalGroupID > 0 {
+		if externalGroupID > 0 && !s.localGatewayAccountCoversGroup(ctx, account, user.DBID, externalGroupID) {
 			allowedGroups, groupErr := s.userAllowedExternalGroupIDs(ctx, user.DBID, externalGroupID)
 			if groupErr != nil {
 				allowedGroups = []int64{externalGroupID}
@@ -555,6 +555,17 @@ func (s *GatewaySyncService) ensureSub2APIUserPolicy(ctx context.Context, client
 	}
 	allowedGroups := []int64{defaultGroupID}
 	return s.ensureSub2APIUserPolicyWithGroups(ctx, client, externalUserID, displayName, allowedGroups, concurrency)
+}
+
+func (s *GatewaySyncService) localGatewayAccountCoversGroup(ctx context.Context, account GatewayAccountSummary, userDBID, externalGroupID int64) bool {
+	if externalGroupID <= 0 {
+		return true
+	}
+	if account.DefaultGroupID == externalGroupID {
+		return true
+	}
+	exists, err := s.activeGatewayAPIKeyExists(ctx, userDBID, externalGroupID)
+	return err == nil && exists
 }
 
 func (s *GatewaySyncService) ensureSub2APIUserPolicyWithGroups(ctx context.Context, client *sub2api.Client, externalUserID int64, displayName string, allowedGroups []int64, concurrency int) error {
