@@ -76,7 +76,7 @@ worker 重试网关操作
 | 用户登录没有 Redis 限速 | 密码爆破会反复打 bcrypt | 已补：请求限速 + 失败计数，成功后清理 IP+邮箱失败计数 |
 | 网关创建只有进程内锁 | 多 API 实例时锁不共享 | 已补：Redis 用户级分布式锁，Redis 不注入时保留进程内锁兜底 |
 | 注册时会同步尝试 Sub2API | 同时大量注册会冲 Sub2API 管理接口 | 已补：立即 provisioning 并发 10、短超时、失败入队 |
-| `/api-keys/system` 和 `/provider/official` 可重复点击 | 本地 key 缺失时可能重复打 Sub2API | key 缺失时加用户级 cooldown 和锁 |
+| `/provider/conversation` 和 `/provider/official` 可重复点击 | 本地 key 缺失时可能重复打 Sub2API | key 缺失时加用户级 cooldown 和锁 |
 | 管理员批量操作缺预算 | 一次批量同步/生成太大可能拖垮接口 | 限最大数量，大任务转后台 |
 | 分组/模型同步可重复点 | 反复读取 Sub2API 管理接口 | Redis job lock，前端显示运行中 |
 | worker 参数固定 | backlog 恢复时可能太猛或太慢 | batch、interval、并发数做成配置 |
@@ -259,9 +259,9 @@ Redis 锁：brevyn:lock:provider:provision:user:{userID}:group:{externalGroupID}
 当前实现：
 
 ```text
-正式客户端只调用 /api/v1/provider/official。
-/api/v1/api-keys/system 保留为兼容/调试接口，响应里带 deprecated=true 和 replacement。
-模型目录读取不再因为缺 externalGroupId 而创建 Key，只读本地分组模型快照。
+正式客户端只调用 /api/v1/provider/conversation 和 /api/v1/provider/official。
+旧 /api/v1/api-keys/system 与 /api/v1/models/catalog 用户侧接口已删除。
+模型目录只作为内部/admin 数据源，客户端从 provider payload 读取 models。
 缺 key 时有 user+group provisioning 限速和 Redis 锁。
 ```
 

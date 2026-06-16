@@ -573,41 +573,6 @@ func (e officialGatewayCredentialError) Unwrap() error {
 	return e.Err
 }
 
-func (h *Handler) SystemAPIKey(c *gin.Context) {
-	user, ok := currentUser(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-	if retryAfter, blocked, err := h.providerLimiter.allowRead(c.Request.Context(), c.ClientIP(), user.ID); err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "rate_limit_unavailable"})
-		return
-	} else if blocked {
-		setRetryAfter(c, retryAfter)
-		writeAuthAPIError(c, http.StatusTooManyRequests, "provider_rate_limited", "官方配置请求过于频繁，请稍后再试")
-		return
-	}
-	groupID, err := h.resolveOfficialProviderGroupID(c.Request.Context(), user, c.Query("externalGroupId"))
-	if err != nil {
-		writeOfficialGatewayCredentialError(c, err)
-		return
-	}
-	credential, err := h.ensureOfficialGatewayCredentialForRequest(c.Request.Context(), user, groupID)
-	if err != nil {
-		writeOfficialGatewayCredentialError(c, err)
-		return
-	}
-	c.Header("Deprecation", "true")
-	c.Header("Link", `</api/v1/provider/official>; rel="successor-version"`)
-	c.JSON(http.StatusOK, gin.H{
-		"key":         credential.PlainKey,
-		"baseUrl":     h.cfg.OfficialProviderBaseURL,
-		"apiKey":      gatewayAPIKeyPointerResponse(credential.APIKey),
-		"deprecated":  true,
-		"replacement": "/api/v1/provider/official",
-	})
-}
-
 func (h *Handler) OfficialProvider(c *gin.Context) {
 	user, ok := currentUser(c)
 	if !ok {
@@ -1001,60 +966,6 @@ func selectedConfiguredModel(selected string, modelIDs []string) string {
 		return modelIDs[0]
 	}
 	return selected
-}
-
-func (h *Handler) ModelCatalog(c *gin.Context) {
-	user, ok := currentUser(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-		return
-	}
-	credentialGroupID := int64(0)
-	if raw := strings.TrimSpace(c.Query("externalGroupId")); raw != "" {
-		requestedGroupID, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || requestedGroupID <= 0 {
-			writeAuthAPIError(c, http.StatusBadRequest, "invalid_external_group_id", "分组 ID 不正确")
-			return
-		}
-		allowed, err := h.userOwnsExternalGroup(c.Request.Context(), user.ID, requestedGroupID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "group_permission_query_failed"})
-			return
-		}
-		if officialGroup, err := h.groupHasOfficialCapabilities(c.Request.Context(), requestedGroupID); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "official_capability_query_failed"})
-			return
-		} else if officialGroup && !allowed && requestedGroupID != h.defaultOfficialProviderGroupID(c.Request.Context(), user.ID) {
-			writeAuthAPIError(c, http.StatusForbidden, "group_not_available", "当前账号无权查看该分组模型")
-			return
-		}
-		officialGroupID := h.defaultOfficialProviderGroupID(c.Request.Context(), user.ID)
-		if !allowed && requestedGroupID != officialGroupID {
-			writeAuthAPIError(c, http.StatusForbidden, "group_not_available", "当前账号无权查看该分组模型")
-			return
-		}
-		credentialGroupID = requestedGroupID
-	} else {
-		credentialGroupID = h.defaultOfficialProviderGroupID(c.Request.Context(), user.ID)
-		if credentialGroupID == 0 {
-			writeOfficialGatewayCredentialError(c, officialGatewayCredentialError{
-				Status: http.StatusAccepted,
-				Code:   "official_capability_not_active",
-				Err:    errors.New("official capability group is not ready"),
-			})
-			return
-		}
-	}
-	models, err := h.modelCatalogForGroups(c.Request.Context(), []int64{credentialGroupID})
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "models_query_failed"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"items":           models,
-		"total":           len(models),
-		"externalGroupId": credentialGroupID,
-	})
 }
 
 func (h *Handler) selectProviderModel(models []modelCatalogItem) string {

@@ -16,8 +16,9 @@ POST /api/v1/auth/logout
 GET  /api/v1/me
 GET  /api/v1/me/wallet
 GET  /api/v1/me/api-keys
+GET  /api/v1/me/gateway-entitlements
+GET  /api/v1/provider/conversation?externalGroupId=xxx
 GET  /api/v1/provider/official?externalGroupId=xxx
-GET  /api/v1/api-keys/system        # deprecated/internal compatibility
 POST /api/v1/redeem
 ```
 
@@ -209,8 +210,8 @@ Sub2API group:
 
 Model access:
   Claude/Kiro and DeepSeek are exposed through the same official provider path initially.
-  Available models are synced from Sub2API into Brevyn Cloud and returned by
-  GET /api/v1/models/catalog according to the user's active/default gateway group.
+  Available models are synced from Sub2API into Brevyn Cloud and returned inside
+  GET /api/v1/provider/conversation and GET /api/v1/provider/official provider payloads.
   Users do not choose Sub2API groups.
 
 Redeem codes:
@@ -581,11 +582,11 @@ POST /devices/register
 GET  /devices
 DELETE /devices/:id
 
+GET  /me/gateway-entitlements
+GET  /provider/conversation?externalGroupId=xxx
 GET  /provider/official?externalGroupId=xxx
-GET  /api-keys/system              # deprecated/internal compatibility
 POST /provider/official/rotate-key
 
-GET  /models/catalog
 GET  /balance
 GET  /usage/summary
 

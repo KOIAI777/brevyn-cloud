@@ -100,7 +100,8 @@ Model access:
   Claude/Kiro and DeepSeek are exposed through the same official provider path in the app.
   Brevyn Cloud syncs model availability from Sub2API channels, model mappings, channel pricing,
   and group bindings into a local gateway model catalog.
-  The app reads GET /api/v1/models/catalog from Brevyn Cloud only.
+  The app receives usable model lists from GET /api/v1/provider/conversation and
+  GET /api/v1/provider/official. The model catalog remains an internal/admin data source.
   Users do not choose Sub2API groups.
 
 Redeem codes:
@@ -747,10 +748,11 @@ Do not route image requests to text-only DeepSeek models.
 Treat vision access as a bundled product benefit, not a separate paid SKU.
 ```
 
-The client should ask Brevyn Cloud for model capabilities:
+The client should read model capabilities from the provider payloads returned by Brevyn Cloud:
 
 ```text
-GET /models/catalog
+GET /provider/conversation
+GET /provider/official
 ```
 
 The response should include:
@@ -1234,7 +1236,6 @@ GET  /me
 
 ```text
 GET  /provider/official?externalGroupId=xxx
-GET  /api-keys/system              # deprecated/internal compatibility
 POST /provider/official/rotate-key
 ```
 
@@ -1249,8 +1250,7 @@ GET /usage/daily
 ### Model Catalog
 
 ```text
-GET /models/catalog
-GET /models/capabilities
+Internal/admin only. Client provider payloads include the selected models and capabilities.
 ```
 
 ### Redeem
