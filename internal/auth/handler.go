@@ -1024,20 +1024,9 @@ func (h *Handler) ModelCatalog(c *gin.Context) {
 		if officialGroup, err := h.groupHasOfficialCapabilities(c.Request.Context(), requestedGroupID); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "official_capability_query_failed"})
 			return
-		} else if officialGroup {
-			eligible, err := h.userHasOfficialCapabilityEntitlement(c.Request.Context(), user.ID)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "official_capability_query_failed"})
-				return
-			}
-			if !eligible {
-				writeOfficialGatewayCredentialError(c, officialGatewayCredentialError{
-					Status: http.StatusAccepted,
-					Code:   "official_capability_not_active",
-					Err:    errors.New("official capability requires a balance package"),
-				})
-				return
-			}
+		} else if officialGroup && !allowed && requestedGroupID != h.defaultOfficialProviderGroupID(c.Request.Context(), user.ID) {
+			writeAuthAPIError(c, http.StatusForbidden, "group_not_available", "当前账号无权查看该分组模型")
+			return
 		}
 		officialGroupID := h.defaultOfficialProviderGroupID(c.Request.Context(), user.ID)
 		if !allowed && requestedGroupID != officialGroupID {
@@ -1051,7 +1040,7 @@ func (h *Handler) ModelCatalog(c *gin.Context) {
 			writeOfficialGatewayCredentialError(c, officialGatewayCredentialError{
 				Status: http.StatusAccepted,
 				Code:   "official_capability_not_active",
-				Err:    errors.New("official capability requires a balance package"),
+				Err:    errors.New("official capability group is not ready"),
 			})
 			return
 		}
@@ -1583,25 +1572,10 @@ func (h *Handler) resolveOfficialProviderGroupID(ctx context.Context, user Princ
 			return 0, officialGatewayCredentialError{
 				Status: http.StatusAccepted,
 				Code:   "official_capability_not_active",
-				Err:    errors.New("official capability requires a balance package"),
+				Err:    errors.New("official capability group is not ready"),
 			}
 		}
 		return groupID, nil
-	}
-	eligible, err := h.userHasOfficialCapabilityEntitlement(ctx, user.ID)
-	if err != nil {
-		return 0, officialGatewayCredentialError{
-			Status: http.StatusInternalServerError,
-			Code:   "official_capability_query_failed",
-			Err:    err,
-		}
-	}
-	if !eligible {
-		return 0, officialGatewayCredentialError{
-			Status: http.StatusAccepted,
-			Code:   "official_capability_not_active",
-			Err:    errors.New("official capability requires a balance package"),
-		}
 	}
 	requestedGroupID, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || requestedGroupID <= 0 {
@@ -1656,10 +1630,13 @@ func (h *Handler) resolveConversationProviderGroupID(ctx context.Context, user P
 		} else if account != nil && account.DefaultGroupID > 0 {
 			return account.DefaultGroupID, nil
 		}
+		if defaultGroupID := h.gatewaySync.DefaultExternalGroupID(ctx); defaultGroupID > 0 {
+			return defaultGroupID, nil
+		}
 		return 0, officialGatewayCredentialError{
 			Status: http.StatusAccepted,
 			Code:   "conversation_provider_not_active",
-			Err:    errors.New("conversation provider requires a redeemed package"),
+			Err:    errors.New("default conversation provider group is not configured"),
 		}
 	}
 	requestedGroupID, err := strconv.ParseInt(raw, 10, 64)
@@ -1693,10 +1670,6 @@ func (h *Handler) defaultOfficialProviderGroupID(ctx context.Context, userID int
 }
 
 func (h *Handler) officialCapabilityGroupID(ctx context.Context, userID int64) int64 {
-	eligible, err := h.userHasOfficialCapabilityEntitlement(ctx, userID)
-	if err != nil || !eligible {
-		return 0
-	}
 	if groupID, err := h.userOfficialCapabilityGroupID(ctx, userID); err == nil && groupID > 0 {
 		return groupID
 	}
@@ -1920,19 +1893,6 @@ func (h *Handler) ensureOfficialGatewayCredentialForGroup(ctx context.Context, u
 		externalGroupID = h.defaultOfficialProviderGroupID(ctx, user.ID)
 	}
 	if externalGroupID == 0 {
-		if eligible, err := h.userHasOfficialCapabilityEntitlement(ctx, user.ID); err != nil {
-			return officialGatewayCredential{}, officialGatewayCredentialError{
-				Status: http.StatusInternalServerError,
-				Code:   "official_capability_query_failed",
-				Err:    err,
-			}
-		} else if !eligible {
-			return officialGatewayCredential{}, officialGatewayCredentialError{
-				Status: http.StatusAccepted,
-				Code:   "official_capability_not_active",
-				Err:    errors.New("official capability requires a balance package"),
-			}
-		}
 		return officialGatewayCredential{}, officialGatewayCredentialError{
 			Status: http.StatusConflict,
 			Code:   "default_gateway_group_not_configured",
@@ -2055,7 +2015,7 @@ func safeGatewayProvisionMessage(code string) string {
 	case "default_gateway_group_not_configured":
 		return "官方网关默认分组未配置，请联系支持"
 	case "official_capability_not_active":
-		return "兑换余额套餐后可启用官方模型配置"
+		return "官方模型配置暂未准备完成，请稍后刷新"
 	case "conversation_provider_not_active":
 		return "兑换套餐后可启用对话模型配置"
 	case "official_capability_query_failed":
