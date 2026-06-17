@@ -237,6 +237,7 @@ export type Sub2APISettingsInput = {
   baseUrl: string;
   adminEmail: string;
   adminPassword?: string;
+  adminApiKey?: string;
   defaultGroupId?: number;
 };
 

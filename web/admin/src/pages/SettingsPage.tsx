@@ -59,6 +59,7 @@ type SettingsForm = {
   baseUrl: string;
   adminEmail: string;
   adminPassword: string;
+  adminApiKey: string;
   defaultGroupId: string;
 };
 
@@ -130,6 +131,7 @@ function SettingsContent({ initialSettings }: { initialSettings: Sub2APISettings
     baseUrl: initialSettings.baseUrl,
     adminEmail: initialSettings.adminEmail,
     adminPassword: "",
+    adminApiKey: "",
     defaultGroupId: String(initialSettings.defaultGroupId || 0)
   });
   const [notice, setNotice] = useState("");
@@ -154,10 +156,13 @@ function SettingsContent({ initialSettings }: { initialSettings: Sub2APISettings
       if (form.adminPassword.trim() !== "") {
         input.adminPassword = form.adminPassword.trim();
       }
+      if (form.adminApiKey.trim() !== "") {
+        input.adminApiKey = form.adminApiKey.trim();
+      }
       return updateSub2APISettings(input);
     },
     onSuccess: async () => {
-      setForm((current) => ({ ...current, adminPassword: "" }));
+      setForm((current) => ({ ...current, adminPassword: "", adminApiKey: "" }));
       setNotice("设置已保存");
       await queryClient.invalidateQueries({ queryKey: ["admin-sub2api-settings"] });
       await queryClient.invalidateQueries({ queryKey: ["admin-gateway-groups"] });
@@ -298,6 +303,16 @@ function SettingsContent({ initialSettings }: { initialSettings: Sub2APISettings
                   />
                 </label>
                 <label>
+                  Admin API Key
+                  <input
+                    onChange={(event) => setForm((currentForm) => ({ ...currentForm, adminApiKey: event.target.value }))}
+                    placeholder={current?.adminApiKeyConfigured ? "已配置，留空不修改" : "admin-..."}
+                    type="password"
+                    value={form.adminApiKey}
+                  />
+                  <span className="field-hint">推荐填写 Sub2API 后台生成的 admin- key；配置后 Cloud 会优先使用 x-api-key。</span>
+                </label>
+                <label>
                   管理员邮箱
                   <input
                     onChange={(event) => setForm((currentForm) => ({ ...currentForm, adminEmail: event.target.value }))}
@@ -313,6 +328,7 @@ function SettingsContent({ initialSettings }: { initialSettings: Sub2APISettings
                     type="password"
                     value={form.adminPassword}
                   />
+                  <span className="field-hint">仅作为 Admin API Key 未配置时的兜底方式。</span>
                 </label>
                 <label>
                   默认分组
@@ -451,6 +467,8 @@ function SettingsContent({ initialSettings }: { initialSettings: Sub2APISettings
                     <dd>{current?.baseUrl || "-"}</dd>
                     <dt>认证</dt>
                     <dd>{authModeLabel(current?.authMode ?? "not_configured")}</dd>
+                    <dt>Admin API Key</dt>
+                    <dd>{current?.adminApiKeyConfigured ? "已配置" : "未配置"}</dd>
                     <dt>密码</dt>
                     <dd>{current?.hasAdminPassword ? "已配置" : "未配置"}</dd>
                     <dt>默认分组</dt>
