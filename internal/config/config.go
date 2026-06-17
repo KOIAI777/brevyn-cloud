@@ -37,16 +37,18 @@ type Config struct {
 	AdminSeedEmail      string
 	AdminSeedPassword   string
 
-	Sub2APIBaseURL               string
-	Sub2APIAdminAPIKey           string
-	Sub2APIAdminEmail            string
-	Sub2APIAdminPassword         string
-	Sub2APIDefaultGroupID        int64
-	RegisterProvisionConcurrency int
-	Sub2APIOperationConcurrency  int
-	Sub2APIOperationBatchSize    int
-	Sub2APIOperationInterval     time.Duration
-	Sub2APIOperationStaleTimeout time.Duration
+	Sub2APIBaseURL                string
+	Sub2APIAdminAPIKey            string
+	Sub2APIAdminEmail             string
+	Sub2APIAdminPassword          string
+	Sub2APIDefaultGroupID         int64
+	RegisterProvisionConcurrency  int
+	Sub2APIOperationConcurrency   int
+	Sub2APIOperationBatchSize     int
+	Sub2APIOperationInterval      time.Duration
+	Sub2APIOperationStaleTimeout  time.Duration
+	Sub2APIKeyCreateRatePerMinute int
+	Sub2APIKeyCreateConcurrency   int
 
 	OfficialProviderBaseURL      string
 	OfficialProviderDefaultModel string
@@ -55,39 +57,41 @@ type Config struct {
 func Load() (*Config, error) {
 	env := getenv("APP_ENV", "development")
 	cfg := &Config{
-		Env:                          env,
-		Port:                         getenv("PORT", "4000"),
-		ShutdownTimeout:              getDuration("SHUTDOWN_TIMEOUT", 10*time.Second),
-		DatabaseURL:                  getenv("DATABASE_URL", "postgres://brevyn:brevyn@127.0.0.1:5432/brevyn_cloud?sslmode=disable"),
-		RedisURL:                     getenv("REDIS_URL", "redis://127.0.0.1:6379/0"),
-		PostgresMaxConns:             getInt("POSTGRES_MAX_CONNS", 30),
-		PostgresMinConns:             getInt("POSTGRES_MIN_CONNS", 2),
-		MigrateOnStartup:             getBool("MIGRATE_ON_STARTUP", env != "production"),
-		BackupDir:                    getenv("BACKUP_DIR", "./backups/postgres"),
-		BackupRetentionDays:          getInt("BACKUP_RETENTION_DAYS", 14),
-		AllowAdminDBRestore:          getBool("ALLOW_ADMIN_DB_RESTORE", false),
-		AppBaseURL:                   getenv("APP_BASE_URL", "http://127.0.0.1:4000"),
-		AdminBaseURL:                 getenv("ADMIN_BASE_URL", "http://127.0.0.1:4000/admin"),
-		AllowedOrigins:               getCSV("CORS_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"),
-		AdminAllowedOrigins:          getCSV("ADMIN_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"),
-		TrustedProxies:               getCSV("TRUSTED_PROXIES", ""),
-		AdminWebDir:                  getenv("ADMIN_WEB_DIR", "./web/admin/dist"),
-		DeviceSoftLimit:              getInt("DEVICE_SOFT_LIMIT", 3),
-		Sub2APIBaseURL:               getenv("SUB2API_BASE_URL", "http://127.0.0.1:8080"),
-		Sub2APIAdminAPIKey:           os.Getenv("SUB2API_ADMIN_API_KEY"),
-		Sub2APIAdminEmail:            os.Getenv("SUB2API_ADMIN_EMAIL"),
-		Sub2APIAdminPassword:         os.Getenv("SUB2API_ADMIN_PASSWORD"),
-		RegisterProvisionConcurrency: getInt("REGISTER_PROVISION_CONCURRENCY", 10),
-		Sub2APIOperationConcurrency:  getInt("SUB2API_OPERATION_CONCURRENCY", 5),
-		Sub2APIOperationBatchSize:    getInt("SUB2API_OPERATION_BATCH_SIZE", 10),
-		Sub2APIOperationInterval:     getDuration("SUB2API_OPERATION_INTERVAL", 10*time.Second),
-		Sub2APIOperationStaleTimeout: getDuration("SUB2API_OPERATION_STALE_TIMEOUT", 5*time.Minute),
-		EncryptionKey:                os.Getenv("ENCRYPTION_KEY"),
-		SessionSecret:                os.Getenv("SESSION_SECRET"),
-		JWTAccessSecret:              os.Getenv("JWT_ACCESS_SECRET"),
-		JWTRefreshSecret:             os.Getenv("JWT_REFRESH_SECRET"),
-		AdminSeedEmail:               getenv("ADMIN_SEED_EMAIL", "owner@brevyn.local"),
-		AdminSeedPassword:            getenv("ADMIN_SEED_PASSWORD", "Brevyn@Admin2026"),
+		Env:                           env,
+		Port:                          getenv("PORT", "4000"),
+		ShutdownTimeout:               getDuration("SHUTDOWN_TIMEOUT", 10*time.Second),
+		DatabaseURL:                   getenv("DATABASE_URL", "postgres://brevyn:brevyn@127.0.0.1:5432/brevyn_cloud?sslmode=disable"),
+		RedisURL:                      getenv("REDIS_URL", "redis://127.0.0.1:6379/0"),
+		PostgresMaxConns:              getInt("POSTGRES_MAX_CONNS", 30),
+		PostgresMinConns:              getInt("POSTGRES_MIN_CONNS", 2),
+		MigrateOnStartup:              getBool("MIGRATE_ON_STARTUP", env != "production"),
+		BackupDir:                     getenv("BACKUP_DIR", "./backups/postgres"),
+		BackupRetentionDays:           getInt("BACKUP_RETENTION_DAYS", 14),
+		AllowAdminDBRestore:           getBool("ALLOW_ADMIN_DB_RESTORE", false),
+		AppBaseURL:                    getenv("APP_BASE_URL", "http://127.0.0.1:4000"),
+		AdminBaseURL:                  getenv("ADMIN_BASE_URL", "http://127.0.0.1:4000/admin"),
+		AllowedOrigins:                getCSV("CORS_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"),
+		AdminAllowedOrigins:           getCSV("ADMIN_ALLOWED_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"),
+		TrustedProxies:                getCSV("TRUSTED_PROXIES", ""),
+		AdminWebDir:                   getenv("ADMIN_WEB_DIR", "./web/admin/dist"),
+		DeviceSoftLimit:               getInt("DEVICE_SOFT_LIMIT", 3),
+		Sub2APIBaseURL:                getenv("SUB2API_BASE_URL", "http://127.0.0.1:8080"),
+		Sub2APIAdminAPIKey:            os.Getenv("SUB2API_ADMIN_API_KEY"),
+		Sub2APIAdminEmail:             os.Getenv("SUB2API_ADMIN_EMAIL"),
+		Sub2APIAdminPassword:          os.Getenv("SUB2API_ADMIN_PASSWORD"),
+		RegisterProvisionConcurrency:  getInt("REGISTER_PROVISION_CONCURRENCY", 5),
+		Sub2APIOperationConcurrency:   getInt("SUB2API_OPERATION_CONCURRENCY", 3),
+		Sub2APIOperationBatchSize:     getInt("SUB2API_OPERATION_BATCH_SIZE", 10),
+		Sub2APIOperationInterval:      getDuration("SUB2API_OPERATION_INTERVAL", 10*time.Second),
+		Sub2APIOperationStaleTimeout:  getDuration("SUB2API_OPERATION_STALE_TIMEOUT", 5*time.Minute),
+		Sub2APIKeyCreateRatePerMinute: getInt("SUB2API_KEY_CREATE_RATE_PER_MINUTE", 15),
+		Sub2APIKeyCreateConcurrency:   getInt("SUB2API_KEY_CREATE_CONCURRENCY", 3),
+		EncryptionKey:                 os.Getenv("ENCRYPTION_KEY"),
+		SessionSecret:                 os.Getenv("SESSION_SECRET"),
+		JWTAccessSecret:               os.Getenv("JWT_ACCESS_SECRET"),
+		JWTRefreshSecret:              os.Getenv("JWT_REFRESH_SECRET"),
+		AdminSeedEmail:                getenv("ADMIN_SEED_EMAIL", "owner@brevyn.local"),
+		AdminSeedPassword:             getenv("ADMIN_SEED_PASSWORD", "Brevyn@Admin2026"),
 		OfficialProviderBaseURL: getenv(
 			"OFFICIAL_PROVIDER_BASE_URL",
 			"https://api.brevyn.org/v1",

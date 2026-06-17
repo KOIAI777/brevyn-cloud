@@ -35,7 +35,30 @@ const (
 
 const ManagedUserConcurrency = 5
 
+const (
+	defaultSub2APIKeyCreateRatePerMinute = 15
+	defaultSub2APIKeyCreateConcurrency   = 3
+	sub2APIKeyCreatePermitTimeout        = 15 * time.Second
+	sub2APIKeyCreateSlotTTL              = 2 * time.Minute
+)
+
 var gatewayUserLocks sync.Map
+
+type sub2APIKeyCreateLimitError struct {
+	message    string
+	retryAfter time.Duration
+}
+
+func (e sub2APIKeyCreateLimitError) Error() string {
+	if strings.TrimSpace(e.message) != "" {
+		return e.message
+	}
+	return "sub2api key creation is rate limited"
+}
+
+func (e sub2APIKeyCreateLimitError) HTTPStatusCode() int {
+	return 429
+}
 
 type GatewayUser struct {
 	DBID        int64
@@ -594,6 +617,26 @@ func (s *GatewaySyncService) EnsureGatewayAPIKeyForOperation(ctx context.Context
 	return err
 }
 
+func (s *GatewaySyncService) CreateRemoteGatewayAPIKey(ctx context.Context, client *sub2api.Client, user GatewayUser, account GatewayAccountSummary, externalGroupID int64, name string, idempotencyKey string) (*sub2api.APIKey, error) {
+	release, err := s.acquireSub2APIKeyCreatePermit(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+
+	userToken, err := client.UserLogin(ctx, account.ExternalEmail, s.ShadowPassword(user.PublicID))
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(name) == "" {
+		name = "Brevyn App"
+	}
+	return client.CreateUserAPIKey(ctx, userToken, sub2api.CreateAPIKeyRequest{
+		Name:    name,
+		GroupID: externalGroupID,
+	}, idempotencyKey)
+}
+
 func (s *GatewaySyncService) EnsureGatewayAPIKeyForUser(ctx context.Context, client *sub2api.Client, user GatewayUser, account GatewayAccountSummary, externalGroupID int64) (*GatewayAPIKeySummary, string, error) {
 	unlock, err := s.lockGatewayUser(ctx, user.DBID)
 	if err != nil {
@@ -613,14 +656,7 @@ func (s *GatewaySyncService) EnsureGatewayAPIKeyForUser(ctx context.Context, cli
 		return nil, "", err
 	}
 
-	userToken, err := client.UserLogin(ctx, account.ExternalEmail, s.ShadowPassword(user.PublicID))
-	if err != nil {
-		return nil, "", err
-	}
-	created, err := client.CreateUserAPIKey(ctx, userToken, sub2api.CreateAPIKeyRequest{
-		Name:    "Brevyn App",
-		GroupID: externalGroupID,
-	}, "brevyn-key-"+strconv.FormatInt(user.DBID, 10)+"-"+strconv.FormatInt(externalGroupID, 10))
+	created, err := s.CreateRemoteGatewayAPIKey(ctx, client, user, account, externalGroupID, "Brevyn App", "brevyn-key-"+strconv.FormatInt(user.DBID, 10)+"-"+strconv.FormatInt(externalGroupID, 10))
 	if err != nil {
 		return nil, "", err
 	}
@@ -666,6 +702,177 @@ func (s *GatewaySyncService) EnsureGatewayAPIKeyForUser(ctx context.Context, cli
 		return nil, "", err
 	}
 	return &item, created.Key, nil
+}
+
+func (s *GatewaySyncService) acquireSub2APIKeyCreatePermit(ctx context.Context) (func(), error) {
+	if s == nil || s.redis == nil {
+		return func() {}, nil
+	}
+	if s.sub2APIKeyCreateConcurrency() <= 0 && s.sub2APIKeyCreateRatePerMinute() <= 0 {
+		return func() {}, nil
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, sub2APIKeyCreatePermitTimeout)
+	released := false
+	releaseAll := func() {
+		if !released {
+			released = true
+			cancel()
+		}
+	}
+
+	for {
+		releaseSlot, slotAcquired, err := s.tryAcquireSub2APIKeyCreateSlot(waitCtx)
+		if err != nil {
+			releaseAll()
+			return nil, err
+		}
+		if slotAcquired {
+			retryAfter, allowed, err := s.allowSub2APIKeyCreateRate(waitCtx)
+			if err != nil {
+				releaseSlot(context.Background())
+				releaseAll()
+				return nil, err
+			}
+			if allowed {
+				return func() {
+					releaseSlot(context.Background())
+					releaseAll()
+				}, nil
+			}
+			releaseSlot(context.Background())
+			if !sleepSub2APIKeyCreateWait(waitCtx, retryAfter) {
+				releaseAll()
+				return nil, sub2APIKeyCreateLimitError{
+					message:    "sub2api key creation rate limit reached",
+					retryAfter: retryAfter,
+				}
+			}
+			continue
+		}
+
+		if !sleepSub2APIKeyCreateWait(waitCtx, 250*time.Millisecond) {
+			releaseAll()
+			return nil, sub2APIKeyCreateLimitError{message: "sub2api key creation concurrency is full"}
+		}
+	}
+}
+
+func (s *GatewaySyncService) tryAcquireSub2APIKeyCreateSlot(ctx context.Context) (func(context.Context), bool, error) {
+	limit := s.sub2APIKeyCreateConcurrency()
+	if limit <= 0 {
+		return func(context.Context) {}, true, nil
+	}
+	token := uuid.NewString()
+	for i := 0; i < limit; i++ {
+		key := "brevyn:lock:sub2api:key-create:slot:" + strconv.Itoa(i)
+		locked, err := s.redis.SetNX(ctx, key, token, sub2APIKeyCreateSlotTTL).Result()
+		if err != nil {
+			return nil, false, err
+		}
+		if locked {
+			return func(releaseCtx context.Context) {
+				const releaseScript = `if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end`
+				_ = s.redis.Eval(releaseCtx, releaseScript, []string{key}, token).Err()
+			}, true, nil
+		}
+	}
+	return func(context.Context) {}, false, nil
+}
+
+func (s *GatewaySyncService) allowSub2APIKeyCreateRate(ctx context.Context) (time.Duration, bool, error) {
+	limit := s.sub2APIKeyCreateRatePerMinute()
+	if limit <= 0 {
+		return 0, true, nil
+	}
+	key := "brevyn:rl:sub2api:key-create:" + time.Now().UTC().Format("200601021504")
+	const script = `
+local current = redis.call("GET", KEYS[1])
+if current and tonumber(current) >= tonumber(ARGV[1]) then
+	local ttl = redis.call("PTTL", KEYS[1])
+	if ttl < 0 then
+		ttl = tonumber(ARGV[2])
+	end
+	return {0, ttl}
+end
+
+local count = redis.call("INCR", KEYS[1])
+if count == 1 then
+	redis.call("PEXPIRE", KEYS[1], ARGV[2])
+end
+local ttl = redis.call("PTTL", KEYS[1])
+if ttl < 0 then
+	ttl = tonumber(ARGV[2])
+end
+return {1, ttl}
+`
+	result, err := s.redis.Eval(ctx, script, []string{key}, limit, int64(time.Minute/time.Millisecond)).Result()
+	if err != nil {
+		return 0, false, err
+	}
+	values, ok := result.([]interface{})
+	if !ok || len(values) < 2 {
+		return 0, false, fmt.Errorf("sub2api key creation rate limiter returned unexpected result")
+	}
+	allowed, err := redisScriptInt64(values[0])
+	if err != nil {
+		return 0, false, err
+	}
+	retryAfterMs, err := redisScriptInt64(values[1])
+	if err != nil {
+		return 0, false, err
+	}
+	if allowed == 1 {
+		return 0, true, nil
+	}
+	retryAfter := time.Duration(retryAfterMs) * time.Millisecond
+	if retryAfter <= 0 {
+		retryAfter = time.Minute
+	}
+	return retryAfter, false, nil
+}
+
+func (s *GatewaySyncService) sub2APIKeyCreateRatePerMinute() int {
+	if s == nil || s.cfg == nil {
+		return defaultSub2APIKeyCreateRatePerMinute
+	}
+	return s.cfg.Sub2APIKeyCreateRatePerMinute
+}
+
+func (s *GatewaySyncService) sub2APIKeyCreateConcurrency() int {
+	if s == nil || s.cfg == nil {
+		return defaultSub2APIKeyCreateConcurrency
+	}
+	return s.cfg.Sub2APIKeyCreateConcurrency
+}
+
+func sleepSub2APIKeyCreateWait(ctx context.Context, wait time.Duration) bool {
+	if wait <= 0 {
+		wait = 250 * time.Millisecond
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func redisScriptInt64(value interface{}) (int64, error) {
+	switch v := value.(type) {
+	case int64:
+		return v, nil
+	case int:
+		return int64(v), nil
+	case string:
+		return strconv.ParseInt(v, 10, 64)
+	case []byte:
+		return strconv.ParseInt(string(v), 10, 64)
+	default:
+		return 0, fmt.Errorf("unexpected redis script number type %T", value)
+	}
 }
 
 func lockGatewayUser(userID int64) func() {

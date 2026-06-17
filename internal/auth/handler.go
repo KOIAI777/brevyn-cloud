@@ -2419,7 +2419,7 @@ func (l *loginLimiter) allowRequest(ctx context.Context, ip string, emailHash st
 		return 0, false, nil
 	}
 	rules := []loginLimitRule{
-		{key: "brevyn:rl:login:req:ip:" + hashRateLimitPart(ip), limit: 120, window: 10 * time.Minute},
+		{key: "brevyn:rl:login:req:ip:" + hashRateLimitPart(ip), limit: 600, window: 10 * time.Minute},
 		{key: "brevyn:rl:login:req:ip_email:" + hashRateLimitPart(ip+":"+emailHash), limit: 20, window: 10 * time.Minute},
 	}
 	return l.incrementRules(ctx, rules)
@@ -2568,7 +2568,7 @@ func (l *redeemLimiter) allow(ctx context.Context, ip string, userID int64, code
 		return 0, false, nil
 	}
 	rules := []redeemLimitRule{
-		{key: "brevyn:rl:redeem:ip:" + hashRateLimitPart(ip), limit: 60, window: 10 * time.Minute},
+		{key: "brevyn:rl:redeem:ip:" + hashRateLimitPart(ip), limit: 300, window: 10 * time.Minute},
 		{key: "brevyn:rl:redeem:user:" + strconv.FormatInt(userID, 10), limit: 20, window: 10 * time.Minute},
 		{key: "brevyn:rl:redeem:code:" + codeHash, limit: 5, window: 10 * time.Minute},
 	}
@@ -2613,7 +2613,7 @@ func (l *providerLimiter) allowRead(ctx context.Context, ip string, userID int64
 	}
 	rules := []providerLimitRule{
 		{key: "brevyn:rl:provider:read:user:" + strconv.FormatInt(userID, 10), limit: 120, window: 10 * time.Minute},
-		{key: "brevyn:rl:provider:read:ip:" + hashRateLimitPart(ip), limit: 180, window: 10 * time.Minute},
+		{key: "brevyn:rl:provider:read:ip:" + hashRateLimitPart(ip), limit: 1000, window: 10 * time.Minute},
 	}
 	return incrementProviderLimitRules(ctx, l.redis, rules)
 }

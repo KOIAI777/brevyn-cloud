@@ -225,18 +225,11 @@ func (s *GatewayKeyService) RotateUserAPIKey(ctx context.Context, userPublicID s
 		return RotatedAPIKeyResult{User: user, ExternalGroupID: externalGroupID}, fmt.Errorf("gateway_account_sync_failed: %w", err)
 	}
 
+	created, err := s.redeem.CreateRemoteGatewayAPIKey(ctx, client, redeemsvc.GatewayUser(user), account, externalGroupID, "Brevyn App Rotated", "brevyn-key-rotate-"+uuid.NewString())
+	if err != nil {
+		return RotatedAPIKeyResult{User: user, ExternalGroupID: externalGroupID}, fmt.Errorf("gateway_key_create_failed: %w", err)
+	}
 	disabledCount, warnings := s.DisableUserGatewayAPIKeysForGroup(ctx, user.DBID, externalGroupID)
-	userToken, err := client.UserLogin(ctx, account.ExternalEmail, s.redeem.ShadowPassword(user.PublicID))
-	if err != nil {
-		return RotatedAPIKeyResult{User: user, ExternalGroupID: externalGroupID, DisabledCount: disabledCount, Warnings: warnings}, fmt.Errorf("gateway_user_login_failed: %w", err)
-	}
-	created, err := client.CreateUserAPIKey(ctx, userToken, sub2api.CreateAPIKeyRequest{
-		Name:    "Brevyn App Rotated",
-		GroupID: externalGroupID,
-	}, "brevyn-key-rotate-"+uuid.NewString())
-	if err != nil {
-		return RotatedAPIKeyResult{User: user, ExternalGroupID: externalGroupID, DisabledCount: disabledCount, Warnings: warnings}, fmt.Errorf("gateway_key_create_failed: %w", err)
-	}
 	record, err := s.insertAdminGatewayAPIKey(ctx, user.DBID, created.ID, externalGroupID, created.Key)
 	if err != nil {
 		return RotatedAPIKeyResult{User: user, ExternalGroupID: externalGroupID, DisabledCount: disabledCount, Warnings: warnings}, fmt.Errorf("gateway_key_store_failed: %w", err)
@@ -277,18 +270,11 @@ func (s *GatewayKeyService) ChangeUserGatewayGroup(ctx context.Context, userPubl
 		return ChangedGatewayGroupResult{User: user, ExternalGroupID: externalGroupID}, fmt.Errorf("gateway_account_sync_failed: %w", err)
 	}
 
+	created, err := s.redeem.CreateRemoteGatewayAPIKey(ctx, client, redeemsvc.GatewayUser(user), account, externalGroupID, "Brevyn App Group", "brevyn-key-group-"+uuid.NewString())
+	if err != nil {
+		return ChangedGatewayGroupResult{User: user, ExternalGroupID: externalGroupID}, fmt.Errorf("gateway_key_create_failed: %w", err)
+	}
 	disabledCount, warnings := s.DisableUserGatewayAPIKeysForGroup(ctx, user.DBID, 0)
-	userToken, err := client.UserLogin(ctx, account.ExternalEmail, s.redeem.ShadowPassword(user.PublicID))
-	if err != nil {
-		return ChangedGatewayGroupResult{User: user, ExternalGroupID: externalGroupID, DisabledCount: disabledCount, Warnings: warnings}, fmt.Errorf("gateway_user_login_failed: %w", err)
-	}
-	created, err := client.CreateUserAPIKey(ctx, userToken, sub2api.CreateAPIKeyRequest{
-		Name:    "Brevyn App Group",
-		GroupID: externalGroupID,
-	}, "brevyn-key-group-"+uuid.NewString())
-	if err != nil {
-		return ChangedGatewayGroupResult{User: user, ExternalGroupID: externalGroupID, DisabledCount: disabledCount, Warnings: warnings}, fmt.Errorf("gateway_key_create_failed: %w", err)
-	}
 	record, err := s.insertAdminGatewayAPIKey(ctx, user.DBID, created.ID, externalGroupID, created.Key)
 	if err != nil {
 		return ChangedGatewayGroupResult{User: user, ExternalGroupID: externalGroupID, DisabledCount: disabledCount, Warnings: warnings}, fmt.Errorf("gateway_key_store_failed: %w", err)
